@@ -21,8 +21,8 @@ class KinematicsGUI:
         self.current_enc = [[0.0, 0.0] for _ in range(4)]
 
         # 存储4组输入框的引用，防止变量名覆盖
-        self.finger_inputs = [] 
-        self.fwd_labels = [] 
+        self.finger_inputs = []
+        self.fwd_labels = []
         self.send_btns = []
 
         self._setup_ui()
@@ -90,23 +90,16 @@ class KinematicsGUI:
             self.fwd_labels.append(res_lab)
 
         # --- 4. 自动逆向运动学 ---
-        inv_frame = ttk.LabelFrame(self.root, text="自定义选择&实时计算： 电机角度（rad） -> 关节角度（rad）")
+        inv_frame = ttk.LabelFrame(self.root, text="实时计算： 电机角度（rad） -> 关节角度（rad）")
         inv_frame.pack(fill="x", padx=10, pady=5)
 
         select_frame = ttk.Frame(inv_frame)
         select_frame.pack(fill="x", padx=5, pady=5)
 
-        curve_options = [f"Curve {i}" for i in range(16)] # 增加到16条可选
-
-        ttk.Label(select_frame, text="Theta1 来源:").grid(row=0, column=0, padx=5)
-        self.theta1_source = ttk.Combobox(select_frame, values=curve_options, width=10, state="readonly")
-        self.theta1_source.current(0) 
-        self.theta1_source.grid(row=0, column=1, padx=5)
-
-        ttk.Label(select_frame, text="Theta2 来源:").grid(row=0, column=2, padx=5)
-        self.theta2_source = ttk.Combobox(select_frame, values=curve_options, width=10, state="readonly")
-        self.theta2_source.current(2) 
-        self.theta2_source.grid(row=0, column=3, padx=5)
+        ttk.Label(select_frame, text="选择手指:").grid(row=0, column=0, padx=5)
+        self.finger_source = ttk.Combobox(select_frame, values=[f"手指 {i}" for i in range(4)], width=10, state="readonly")
+        self.finger_source.current(0)
+        self.finger_source.grid(row=0, column=1, padx=5)
 
         self.inv_input_display = ttk.Label(inv_frame, text="当前提取电机角度(rad): Theta1=0.00，Theta2=0.00")
         self.inv_input_display.pack(pady=5)
@@ -180,7 +173,7 @@ class KinematicsGUI:
         """GUI 刷新循环"""
         if self.serial_mgr and self.serial_mgr.is_connected:
             
-            # 新增：实时更新 丢包率、接收包裹数、丢失包裹数
+            # 1. 实时更新 丢包率、接收包裹数、丢失包裹数
             loss_rate = self.serial_mgr.current_loss_rate
             recv_cnt = self.serial_mgr.last_sec_received
             lost_cnt = self.serial_mgr.last_sec_lost
@@ -188,32 +181,36 @@ class KinematicsGUI:
             color = "red" if loss_rate > 5.0 else ("orange" if loss_rate > 0 else "blue")
             self.loss_rate_label.config(text=f"丢包率: {loss_rate:.2f}% (收: {recv_cnt}, 丢: {lost_cnt})", foreground=color)
             
-            latest_frame = None
-            while True:
-                frame = self.serial_mgr.get_parsed_data()
-                if not frame: break
-                latest_frame = frame
-            
-            if latest_frame and latest_frame['samples']:
-                last_sample = latest_frame['samples'][-1]
-                
-                # 1. 更新曲线打印
-                self.curve_text.config(state="normal")
-                self.curve_text.delete(1.0, tk.END)
-                display_str = "\n".join([f"C{i}:{v:.3f}" for i, v in enumerate(last_sample)])
-                self.curve_text.insert(tk.END, f"Time: {latest_frame['hw_time']:.3f} s\n{display_str}")
-                self.curve_text.config(state="disabled")
+            # 2. 获取4个手指的最新curve数据并显示
+            self.curve_text.config(state="normal")
+            self.curve_text.delete(1.0, tk.END)
 
-                # 2. 自动逆向运动学计算 (根据下拉框选择动态获取)
-                idx1 = self.theta1_source.current()
-                idx2 = self.theta2_source.current()
-                
-                if len(last_sample) > max(idx1, idx2):
-                    t1_in, t2_in = last_sample[idx1], last_sample[idx2]
-                    self.inv_input_display.config(text=f"提取电机角度(rad): Theta1={t1_in:.2f}°, Theta2={t2_in:.2f}°")
-                    
-                    e1, e2 = self.kin.Angles_to_motor_enc(t1_in, t2_in)
-                    self.inv_result_label.config(text=f"关节角度(rad): Joint近={e1}, Joint中={e2}")
+            display_lines = []
+            for i in range(4):
+                getter_method = getattr(self.serial_mgr, f"get_latest_curve_finger_{i}")
+                curve_data = getter_method()
+
+                if curve_data:
+                    display_str = ", ".join([f"C{j}:{v:.3f}" for j, v in enumerate(curve_data)])
+                    display_lines.append(f"[手指 {i}] {display_str}")
+                else:
+                    display_lines.append(f"[手指 {i}] 等待数据中...")
+
+            self.curve_text.insert(tk.END, "\n".join(display_lines))
+            self.curve_text.config(state="disabled")
+
+            # 3. 自动逆向运动学计算
+            # finger_idx = self.finger_source.current()
+            # getter_method = getattr(self.serial_mgr, f"get_latest_curve_finger_{finger_idx}")
+            # curve_data = getter_method()
+
+            # if curve_data and len(curve_data) >= 2:
+            #     theta1 = curve_data[0]
+            #     theta2 = curve_data[1]
+            #     self.inv_input_display.config(text=f"提取(手指{finger_idx})电机角度: Theta1={theta1:.2f}°, Theta2={theta2:.2f}°")
+
+            #     e1, e2 = self.kin.Angles_to_motor_enc(theta1, theta2)
+            #     self.inv_result_label.config(text=f"关节角度(rad): Joint近={e1:.3f}, Joint中={e2:.3f}")
 
         self.root.after(50, self._update_loop)
 

@@ -28,10 +28,10 @@ class SerialManager:
     }
 
     RX_TARGET_ID               = { 
-        "Finger1": 0x01,
-        "Finger2": 0xBF,
-        "Finger3": 0xAA,
-        "Finger4": 0x23
+        "Finger0": 0xB0,
+        "Finger1": 0xBF,
+        "Finger2": 0xAA,
+        "Finger3": 0x23
     }
 
 
@@ -48,8 +48,10 @@ class SerialManager:
         
         # 数据缓冲区与队列
         self.serial_buffer = bytearray()
-        self.receive_queue = queue.Queue()
-        self.hex_queue = queue.Queue()
+        self.receive_queue_mcu_0 = queue.Queue()
+        self.receive_queue_mcu_1 = queue.Queue()
+        self.receive_queue_mcu_2 = queue.Queue()
+        self.receive_queue_mcu_3 = queue.Queue()
         
         # --- 状态与统计 ---
         self.rx_curve_count = 0
@@ -62,13 +64,17 @@ class SerialManager:
         self.total_packets_lost = 0
         self.last_loss_calc_time = time.time()
         
-        # 新增变量：发送帧计数器
-        self.tx_frame_counter = 0 
         
         # 暴露的当前状态
         self.current_loss_rate = 0.0
         self.last_sec_received = 0
         self.last_sec_lost = 0
+
+        # 保存每个手指的最新有效帧
+        self.latest_frame_finger_0 = None
+        self.latest_frame_finger_1 = None
+        self.latest_frame_finger_2 = None
+        self.latest_frame_finger_3 = None
 
     def connect(self):
         """打开串口并启动读取线程"""
@@ -149,7 +155,7 @@ class SerialManager:
             data = struct.pack('<BBBBB h B h B',
                 self.RX_FRAME_HEADER,      # 0 帧头: 0x3B
                 target_id,                 # 1 ID: 路由对象 (从RX_TARGET_ID字典获取)
-                self.tx_frame_counter,     # 2 计数器: 0~255
+                0,     # 2 计数器: 0~255
                 2,                         # 3 命令数量: 总是2 (M1 和 M2)
                 self.CONTROL_MODE_ENUM["Thetam"],     # 4 M1 Mode
                 param1,                    # 5-6 M1 Command 
@@ -161,8 +167,6 @@ class SerialManager:
             # 3. 发送并通过串口发送
             self.ser.write(data)
             
-            # 发送成功后计数器累加 (0-255循环)
-            self.tx_frame_counter = (self.tx_frame_counter + 1) % 256
             return True
             
         except Exception as e:
@@ -250,7 +254,8 @@ class SerialManager:
                 
             if len(self.serial_buffer) < self.TX_HEADER_SIZE:
                 break
-                
+
+            mcu_id = self.serial_buffer[1]    
             # 2. 解析基础头信息获取帧长度
             func_byte = self.serial_buffer[3]
             curve_count = self.serial_buffer[8]
@@ -325,12 +330,30 @@ class SerialManager:
                         current_offset += 2 # 步进
                     parsed_frame['samples'].append(sample_data)
                 
-                # 抛出解析结果
-                self.receive_queue.put(parsed_frame)
-                
-                # 抛出原始Hex (可选使用)
-                hex_str = frame.hex(' ').upper() + "\n"
-                self.hex_queue.put(hex_str)
+                # 抛出解析结果并更新最新帧
+                matched = False
+                if mcu_id == self.RX_TARGET_ID['Finger0']:
+                    self.receive_queue_mcu_0.put(parsed_frame)
+                    self.latest_frame_finger_0 = parsed_frame
+                    matched = True
+
+                if mcu_id == self.RX_TARGET_ID['Finger1']:
+                    self.receive_queue_mcu_1.put(parsed_frame)
+                    self.latest_frame_finger_1 = parsed_frame
+                    matched = True
+
+                if mcu_id == self.RX_TARGET_ID['Finger2']:
+                    self.receive_queue_mcu_2.put(parsed_frame)
+                    self.latest_frame_finger_2 = parsed_frame
+                    matched = True
+
+                if mcu_id == self.RX_TARGET_ID['Finger3']:
+                    self.receive_queue_mcu_3.put(parsed_frame)
+                    self.latest_frame_finger_3 = parsed_frame
+                    matched = True
+
+                if not matched:
+                    print(f"[警告] 未识别的 mcu_id: 0x{mcu_id:02X}, 期望值: Finger0=0x01, Finger1=0xBF, Finger2=0xAA, Finger3=0x23")
                 
                 # 移除已解析的数据
                 del self.serial_buffer[:frame_length]
@@ -339,9 +362,56 @@ class SerialManager:
 
     # ========================== 获取数据接口 ==========================
 
-    def get_parsed_data(self):
+    def get_parsed_data_finger_0(self):
         """获取一帧解析好的业务数据字典 (非阻塞)"""
         try:
-            return self.receive_queue.get_nowait()
+            return self.receive_queue_mcu_0.get_nowait()
         except queue.Empty:
             return None
+        
+    def get_parsed_data_finger_1(self):
+        """获取一帧解析好的业务数据字典 (非阻塞)"""
+        try:
+            return self.receive_queue_mcu_1.get_nowait()
+        except queue.Empty:
+            return None
+        
+    def get_parsed_data_finger_2(self):
+        """获取一帧解析好的业务数据字典 (非阻塞)"""
+        try:
+            return self.receive_queue_mcu_2.get_nowait()
+        except queue.Empty:
+            return None
+    
+    def get_parsed_data_finger_3(self):
+        """获取一帧解析好的业务数据字典 (非阻塞)"""
+        try:
+            return self.receive_queue_mcu_3.get_nowait()
+        except queue.Empty:
+            return None
+
+    # ========================== 获取最新 Curve 数据接口 ==========================
+
+    def get_latest_curve_finger_0(self):
+        """获取手指0的最新curve数据"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples']:
+            return self.latest_frame_finger_0['samples'][-1]
+        return None
+
+    def get_latest_curve_finger_1(self):
+        """获取手指1的最新curve数据"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples']:
+            return self.latest_frame_finger_1['samples'][-1]
+        return None
+
+    def get_latest_curve_finger_2(self):
+        """获取手指2的最新curve数据"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples']:
+            return self.latest_frame_finger_2['samples'][-1]
+        return None
+
+    def get_latest_curve_finger_3(self):
+        """获取手指3的最新curve数据"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples']:
+            return self.latest_frame_finger_3['samples'][-1]
+        return None
