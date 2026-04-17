@@ -1,20 +1,40 @@
-# 文件名: serial_manager.py
 import serial
 import threading
 import queue
 import time
 import struct
+import math # 新增 math 用于 pi 的计算
 
 class SerialManager:
-    # --- 协议常量定义 ---
-    FRAME_HEADER      = 0x5A
-    FRAME_TAIL        = 0x0D
-    HEADER_SIZE       = 10
-    TAIL_SIZE         = 3
-    FUNC_NORMAL_SPEED = 0x00
-    FUNC_HIGH_SPEED   = 0x01
-    INNER_FREQ        = 10000.0
-    OUTER_FREQ        = 1000.0
+    # --- 协议常量定义 (原有) ---
+    TX_FRAME_HEADER         = 0x5A
+    TX_FRAME_TAIL           = 0x0D
+    TX_HEADER_SIZE          = 10
+    TX_TAIL_SIZE            = 3
+    TX_FUNC_NORMAL_SPEED    = 0x00
+    TX_FUNC_HIGH_SPEED      = 0x01
+    INNER_FREQ              = 10000.0
+    OUTER_FREQ              = 1000.0
+
+    # --- 新增: 发送(Rx)协议常量定义 ---
+    RX_FRAME_HEADER         = 0x3B
+    RX_FRAME_TAIL           = 0x1E
+    CONTROL_MODE_ENUM       = { 
+        "AppDisable": 0x00,
+        "Iq": 0x01,
+        "Id": 0x02,
+        "Omegam": 0x03,
+        "Thetam": 0x04
+    }
+
+    RX_TARGET_ID               = { 
+        "Finger1": 0x01,
+        "Finger2": 0xBF,
+        "Finger3": 0xAA,
+        "Finger4": 0x23
+    }
+
+
 
     def __init__(self, port, baudrate=115200, timeout=0.1):
         self.port = port
@@ -28,21 +48,24 @@ class SerialManager:
         
         # 数据缓冲区与队列
         self.serial_buffer = bytearray()
-        self.receive_queue = queue.Queue()  # 存放解析好的业务数据
-        self.hex_queue = queue.Queue()      # 存放原始的Hex字符串
+        self.receive_queue = queue.Queue()
+        self.hex_queue = queue.Queue()
         
         # --- 状态与统计 ---
         self.rx_curve_count = 0
         self.rx_sample_count = 0
         self.rx_data_speed = 500
         
-        # 丢包统计(累计变量)
+        # 丢包统计
         self.expected_frame_counter = 0
         self.total_packets_received = 0
         self.total_packets_lost = 0
         self.last_loss_calc_time = time.time()
         
-        # 新增：向外暴露的当前状态 (每秒更新一次)
+        # 新增变量：发送帧计数器
+        self.tx_frame_counter = 0 
+        
+        # 暴露的当前状态
         self.current_loss_rate = 0.0
         self.last_sec_received = 0
         self.last_sec_lost = 0
@@ -98,16 +121,50 @@ class SerialManager:
 
     # ========================== 发送数据接口 ==========================
 
-    def send_raw_data(self, command1: float, command2: float) -> bool:
+    def send_theta_command(self, target_index: int, theta1_rad: float, theta2_rad: float) -> bool:
         """
-        根据下位机协议发送2条commands
+        根据下位机 Rx 协议发送 2 条关节位置(Thetam)指令
+        :param target_index: 目标设备的索引 (0,1,2,3 对应 Finger1-Finger4)
+        :param theta1_rad: 电机 1 的目标角度 (弧度)
+        :param theta2_rad: 电机 2 的目标角度 (弧度)
         """
         if not self.is_connected or not self.ser:
             print("[发送失败] 串口未连接")
             return False
+
+        # 验证target_index范围
+        if target_index < 0 or target_index > 3:
+            print(f"[发送失败] target_index 超出范围 (0-3): {target_index}")
+            return False
+            
+        # 通过target_index索引获取对应的target_id
+        finger_keys = list(self.RX_TARGET_ID.keys())
+        target_id = self.RX_TARGET_ID[finger_keys[target_index]]
+
+        # 1. 浮点数转化为 16-bit 有符号整数 (反量化)
+        param1 = int(theta1_rad)
+        param2 = int(theta2_rad)
+
         try:
+            data = struct.pack('<BBBBB h B h B',
+                self.RX_FRAME_HEADER,      # 0 帧头: 0x3B
+                target_id,                 # 1 ID: 路由对象 (从RX_TARGET_ID字典获取)
+                self.tx_frame_counter,     # 2 计数器: 0~255
+                2,                         # 3 命令数量: 总是2 (M1 和 M2)
+                self.CONTROL_MODE_ENUM["Thetam"],     # 4 M1 Mode
+                param1,                    # 5-6 M1 Command 
+                self.CONTROL_MODE_ENUM["Thetam"],     # 7 M2 Mode
+                param2,                    # 8-9 M2 Command
+                self.RX_FRAME_TAIL         # 10 帧尾: 0x1E
+            )
+
+            # 3. 发送并通过串口发送
             self.ser.write(data)
+            
+            # 发送成功后计数器累加 (0-255循环)
+            self.tx_frame_counter = (self.tx_frame_counter + 1) % 256
             return True
+            
         except Exception as e:
             print(f"[发送错误]: {e}")
             return False
@@ -182,16 +239,16 @@ class SerialManager:
 
     def _parse_buffer(self):
         """解析缓冲区中的数据包"""
-        while len(self.serial_buffer) >= self.HEADER_SIZE + self.TAIL_SIZE:
+        while len(self.serial_buffer) >= self.TX_HEADER_SIZE + self.TX_TAIL_SIZE:
             # 1. 寻找帧头 0x5A
-            header_index = self.serial_buffer.find(self.FRAME_HEADER)
+            header_index = self.serial_buffer.find(self.TX_FRAME_HEADER)
             if header_index == -1:
                 self.serial_buffer.clear()
                 break
             if header_index > 0:
                 del self.serial_buffer[:header_index] # 移除脏数据
                 
-            if len(self.serial_buffer) < self.HEADER_SIZE:
+            if len(self.serial_buffer) < self.TX_HEADER_SIZE:
                 break
                 
             # 2. 解析基础头信息获取帧长度
@@ -205,7 +262,7 @@ class SerialManager:
                 continue
                 
             payload_byte_size = curve_count * sample_count * 2 # sizeof(int16_t)
-            frame_length = self.HEADER_SIZE + curve_count + payload_byte_size + self.TAIL_SIZE
+            frame_length = self.TX_HEADER_SIZE + curve_count + payload_byte_size + self.TX_TAIL_SIZE
             
             if len(self.serial_buffer) < frame_length:
                 break # 长度不够，等待更多数据
@@ -213,12 +270,12 @@ class SerialManager:
             frame = self.serial_buffer[:frame_length]
             
             # 3. 校验帧尾
-            if frame[frame_length - 1] != self.FRAME_TAIL:
+            if frame[frame_length - 1] != self.TX_FRAME_TAIL:
                 del self.serial_buffer[:1]
                 continue
                 
             # 4. 校验 CRC
-            crc_data_length = self.HEADER_SIZE + curve_count + payload_byte_size
+            crc_data_length = self.TX_HEADER_SIZE + curve_count + payload_byte_size
             calc_crc = self._calculate_crc16(frame, crc_data_length)
             recv_crc = (frame[frame_length - 2] << 8) | frame[frame_length - 3]
             
@@ -243,7 +300,7 @@ class SerialManager:
                 
                 # 解析硬件时间戳 (小端 4字节)
                 timestamp_ms = struct.unpack('<I', frame[4:8])[0]
-                if func_byte == self.FUNC_HIGH_SPEED:
+                if func_byte == self.TX_FUNC_HIGH_SPEED:
                     base_hw_time = timestamp_ms / self.INNER_FREQ
                     self.rx_data_speed = 10000
                 else:
@@ -257,7 +314,7 @@ class SerialManager:
                 parsed_frame = {'device_id': device_id, 'hw_time': base_hw_time, 'samples': []}
                 
                 # 核心解析循环：与 C++ 逻辑保持一比一对应
-                current_offset = self.HEADER_SIZE + curve_count
+                current_offset = self.TX_HEADER_SIZE + curve_count
                 for s in range(sample_count):
                     sample_data = []
                     for c in range(curve_count):

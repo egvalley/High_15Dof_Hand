@@ -11,15 +11,14 @@ class KinematicsGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("腱传动机械臂控制与运动学分析")
-        self.root.geometry("850x900") # 加宽窗口以容纳更长的文字
+        self.root.geometry("850x700") # 加宽窗口以容纳更长的文字
         
         # 初始化逻辑类
         self.kin = TendonDriveKinematics()
         self.serial_mgr = None
         
-        # 用于缓存待发送的数据
-        self.current_e1 = 0
-        self.current_e2 = 0
+        # 用于缓存待发送的数据,4个手指分别缓存待发送的数据
+        self.current_enc = [[0.0, 0.0] for _ in range(4)]
 
         # 存储4组输入框的引用，防止变量名覆盖
         self.finger_inputs = [] 
@@ -82,7 +81,7 @@ class KinematicsGUI:
             calc_btn = ttk.Button(frame, text="计算", command=partial(self._manual_calc_and_save, i-1))
             calc_btn.grid(row=0, column=4, padx=5)
 
-            s_btn = ttk.Button(frame, text="发送指令", command=self._send_motor_command, state="disabled")
+            s_btn = ttk.Button(frame, text="发送指令", command=partial(self._send_motor_theta_command, i-1), state="disabled")
             s_btn.grid(row=0, column=5, padx=5)
             self.send_btns.append(s_btn)
             
@@ -149,8 +148,9 @@ class KinematicsGUI:
             # 1. 调用运动学公式 (角度 -> 编码)
             e1, e2 = self.kin.Angles_to_motor_enc(val1, val2)
             
-            # 2. 缓存结果到全局变量
-            self.current_e1, self.current_e2 = e1, e2
+            # 2. 缓存结果到对应手指的列表中 (修改这里)
+            self.current_enc[index][0] = e1
+            self.current_enc[index][1] = e2
             
             # 3. 更新对应的显示标签
             self.fwd_labels[index].config(
@@ -159,18 +159,20 @@ class KinematicsGUI:
         except Exception as e:
             messagebox.showwarning("输入错误", "请输入有效的数字")
 
-    def _send_motor_command(self):
-        """发送最新计算出的编码值"""
+    def _send_motor_theta_command(self, index): # 增加 index 参数
+        """发送最新计算出的编码值(弧度)"""
         if not self.serial_mgr or not self.serial_mgr.is_connected:
             messagebox.showwarning("警告", "串口未连接")
             return
 
         try:
-            # 根据协议构造指令
-            enc1_int = self.current_e1 * 1
-            enc2_int = self.current_e2 * 1
-            self.serial_mgr.send_raw_data(enc1_int, enc2_int)
-            print(f"已发送指令")
+            # 获取对应手指的编码值 (单位是弧度 rad)
+            theta1_rad = self.current_enc[index][0]
+            theta2_rad = self.current_enc[index][1]
+            
+            # 调用更新后的发送协议，加入 target_id 参数
+            self.serial_mgr.send_theta_command(index, theta1_rad, theta2_rad)
+            print(f"已发送指令到设备: M1={theta1_rad:.4f}rad, M2={theta2_rad:.4f}rad")
         except Exception as e:
             messagebox.showerror("发送失败", f"错误: {str(e)}")
 
