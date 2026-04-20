@@ -4,8 +4,8 @@ import threading
 import time
 import struct
 from functools import partial
-from serial_manager import SerialManager
-from forward_reverse_formula import TendonDriveKinematics
+from sdk.serial_manager import SerialManager
+from sdk.forward_reverse_formula import TendonDriveKinematics
 
 class KinematicsGUI:
     def __init__(self, root):
@@ -53,7 +53,7 @@ class KinematicsGUI:
         self.status_label.pack(side="left", padx=5)
         
         # 新增：丢包率与统计数量显示标签
-        self.loss_rate_label = ttk.Label(serial_frame, text="丢包率: 0.00% (收: 0, 丢: 0)", foreground="blue", font=("Arial", 10, "bold"))
+        self.loss_rate_label = ttk.Label(serial_frame, text="丢包率: 0.00% (收: 0, 丢: 0)", foreground="black", font=("Arial", 10, "bold"))
         self.loss_rate_label.pack(side="left", padx=10)
 
         # --- 2. 实时曲线数据打印区 ---
@@ -115,7 +115,7 @@ class KinematicsGUI:
             self.serial_mgr.disconnect()
             self.conn_btn.config(text="连接串口")
             self.status_label.config(text="状态: 未连接", foreground="red")
-            self.loss_rate_label.config(text="丢包率: 0.00% (收: 0, 丢: 0)", foreground="blue") # 断开时清空显示
+            self.loss_rate_label.config(text="丢包率: 0.00% (收: 0, 丢: 0)", foreground="black") # 断开时清空显示
             for btn in self.send_btns: btn.config(state="disabled")
         else:
             port = self.port_entry.get()
@@ -178,7 +178,7 @@ class KinematicsGUI:
             recv_cnt = self.serial_mgr.last_sec_received
             lost_cnt = self.serial_mgr.last_sec_lost
             
-            color = "red" if loss_rate > 5.0 else ("orange" if loss_rate > 0 else "blue")
+            color = "red" if loss_rate > 5.0 else ("orange" if loss_rate > 0 else "green")
             self.loss_rate_label.config(text=f"丢包率: {loss_rate:.2f}% (收: {recv_cnt}, 丢: {lost_cnt})", foreground=color)
             
             # 2. 获取4个手指的最新curve数据并显示
@@ -186,12 +186,15 @@ class KinematicsGUI:
             self.curve_text.delete(1.0, tk.END)
 
             display_lines = []
-            for i in range(4):
-                getter_method = getattr(self.serial_mgr, f"get_latest_curve_finger_{i}")
-                curve_data = getter_method()
+            for i in range(1):
+                getter_motor_0_theta_method = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_0_theta")
+                getter_motor_1_theta_method = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_1_theta")
+                motor_0_theta_data = getter_motor_0_theta_method()
+                motor_1_theta_data = getter_motor_1_theta_method()
 
-                if curve_data:
-                    display_str = ", ".join([f"C{j}:{v:.3f}" for j, v in enumerate(curve_data)])
+                if motor_0_theta_data and motor_1_theta_data:
+                    # Display motor names with their theta values
+                    display_str = f"motor_0_theta:{motor_0_theta_data:.3f}, motor_1_theta:{motor_1_theta_data:.3f}"
                     display_lines.append(f"[手指 {i}] {display_str}")
                 else:
                     display_lines.append(f"[手指 {i}] 等待数据中...")

@@ -3,10 +3,9 @@ import threading
 import queue
 import time
 import struct
-import math # 新增 math 用于 pi 的计算
 
 class SerialManager:
-    # --- 协议常量定义 (原有) ---
+    # --- 下位机发送(Tx)协议常量定义 ---
     TX_FRAME_HEADER         = 0x5A
     TX_FRAME_TAIL           = 0x0D
     TX_HEADER_SIZE          = 10
@@ -16,7 +15,7 @@ class SerialManager:
     INNER_FREQ              = 10000.0
     OUTER_FREQ              = 1000.0
 
-    # --- 新增: 发送(Rx)协议常量定义 ---
+    # --- 下位机接收(Rx)协议常量定义 ---
     RX_FRAME_HEADER         = 0x3B
     RX_FRAME_TAIL           = 0x1E
     CONTROL_MODE_ENUM       = { 
@@ -27,6 +26,7 @@ class SerialManager:
         "Thetam": 0x04
     }
 
+    # --- 下位机手指索引与ID ---
     RX_TARGET_ID               = { 
         "Finger0": 0xB0,
         "Finger1": 0xBF,
@@ -34,6 +34,16 @@ class SerialManager:
         "Finger3": 0x23
     }
 
+    # --- 特定数据的序号 ---
+    CURVE_MOTOR0_THETA_INDEX = 0
+    CURVE_MOTOR0_OMEGA_INDEX = 4
+    CURVE_MOTOR0_IQ_INDEX = 2
+    CURVE_MOTOR0_ID_INDEX = 3
+
+    CURVE_MOTOR1_THETA_INDEX = 1
+    CURVE_MOTOR1_OMEGA_INDEX = 5
+    CURVE_MOTOR1_IQ_INDEX = 6
+    CURVE_MOTOR1_ID_INDEX = 7
 
 
     def __init__(self, port, baudrate=115200, timeout=0.1):
@@ -124,54 +134,6 @@ class SerialManager:
         self.expected_frame_counter = 0
         self.total_packets_received = 0
         self.total_packets_lost = 0
-
-    # ========================== 发送数据接口 ==========================
-
-    def send_theta_command(self, target_index: int, theta1_rad: float, theta2_rad: float) -> bool:
-        """
-        根据下位机 Rx 协议发送 2 条关节位置(Thetam)指令
-        :param target_index: 目标设备的索引 (0,1,2,3 对应 Finger1-Finger4)
-        :param theta1_rad: 电机 1 的目标角度 (弧度)
-        :param theta2_rad: 电机 2 的目标角度 (弧度)
-        """
-        if not self.is_connected or not self.ser:
-            print("[发送失败] 串口未连接")
-            return False
-
-        # 验证target_index范围
-        if target_index < 0 or target_index > 3:
-            print(f"[发送失败] target_index 超出范围 (0-3): {target_index}")
-            return False
-            
-        # 通过target_index索引获取对应的target_id
-        finger_keys = list(self.RX_TARGET_ID.keys())
-        target_id = self.RX_TARGET_ID[finger_keys[target_index]]
-
-        # 1. 浮点数转化为 16-bit 有符号整数 (反量化)
-        param1 = int(theta1_rad)
-        param2 = int(theta2_rad)
-
-        try:
-            data = struct.pack('<BBBBB h B h B',
-                self.RX_FRAME_HEADER,      # 0 帧头: 0x3B
-                target_id,                 # 1 ID: 路由对象 (从RX_TARGET_ID字典获取)
-                0,     # 2 计数器: 0~255
-                2,                         # 3 命令数量: 总是2 (M1 和 M2)
-                self.CONTROL_MODE_ENUM["Thetam"],     # 4 M1 Mode
-                param1,                    # 5-6 M1 Command 
-                self.CONTROL_MODE_ENUM["Thetam"],     # 7 M2 Mode
-                param2,                    # 8-9 M2 Command
-                self.RX_FRAME_TAIL         # 10 帧尾: 0x1E
-            )
-
-            # 3. 发送并通过串口发送
-            self.ser.write(data)
-            
-            return True
-            
-        except Exception as e:
-            print(f"[发送错误]: {e}")
-            return False
 
     # ========================== 核心解析逻辑 ==========================
 
@@ -313,7 +275,7 @@ class SerialManager:
                     self.rx_data_speed = 500
                     
                 # 解析 Max_Abs 数组
-                max_abs_values = [frame[10 + i] for i in range(curve_count)]
+                max_abs_values = [frame[self.TX_HEADER_SIZE + i] for i in range(curve_count)]
                 
                 # 组织数据结构并解析 Payload
                 parsed_frame = {'device_id': device_id, 'hw_time': base_hw_time, 'samples': []}
@@ -415,3 +377,144 @@ class SerialManager:
         if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples']:
             return self.latest_frame_finger_3['samples'][-1]
         return None
+    
+    # ========================== 获取最新 特定 数据接口 ==========================
+
+    def get_latest_data_finger_0_motor_0_theta(self):
+        """获取手指0的电机0的当前角度"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR0_THETA_INDEX]
+        return None
+    def get_latest_data_finger_0_motor_0_omega(self):
+        """获取手指0的电机0的当前角速度"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR0_OMEGA_INDEX]
+        return None
+    
+    def get_latest_data_finger_0_motor_0_iq(self):
+        """获取手指0的电机0的当前iq电流"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR0_IQ_INDEX]
+        return None
+    
+    def get_latest_data_finger_0_motor_0_id(self):
+        """获取手指0的电机0的当前id电流"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR0_ID_INDEX]
+        return None
+    def get_latest_data_finger_0_motor_1_theta(self):
+        """获取手指0的电机1的当前角度"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR1_THETA_INDEX]
+        return None
+    def get_latest_data_finger_0_motor_1_omega(self):
+        """获取手指0的电机1的当前角速度"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR1_OMEGA_INDEX]
+        return None
+        
+    def get_latest_data_finger_0_motor_1_iq(self):
+        """获取手指0的电机1的当前iq电流"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR1_IQ_INDEX]
+        return None
+    
+    def get_latest_data_finger_0_motor_1_id(self):
+        """获取手指0的电机1的当前id电流"""
+        if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
+            return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR1_ID_INDEX]
+        return None
+    
+    # ========================== 发送数据接口 ==========================
+
+    def send_theta_command(self, target_index: int, theta1_rad: float, theta2_rad: float) -> bool:
+        """
+        根据下位机 Rx 协议发送 2 条关节位置(Thetam)指令
+        :param target_index: 目标设备的索引 (0,1,2,3 对应 Finger1-Finger4)
+        :param theta1_rad: 电机 1 的目标角度 (弧度)
+        :param theta2_rad: 电机 2 的目标角度 (弧度)
+        """
+        if not self.is_connected or not self.ser:
+            print("[发送失败] 串口未连接")
+            return False
+
+        # 验证target_index范围
+        if target_index < 0 or target_index > 3:
+            print(f"[发送失败] target_index 超出范围 (0-3): {target_index}")
+            return False
+            
+        # 通过target_index索引获取对应的target_id
+        finger_keys = list(self.RX_TARGET_ID.keys())
+        target_id = self.RX_TARGET_ID[finger_keys[target_index]]
+
+        # 1. 浮点数转化为 16-bit 有符号整数 (反量化)
+        param1 = int(theta1_rad)
+        param2 = int(theta2_rad)
+
+        try:
+            data = struct.pack('<BBBBB h B h B',
+                self.RX_FRAME_HEADER,      # 0 帧头: 0x3B
+                target_id,                 # 1 ID: 路由对象 (从RX_TARGET_ID字典获取)
+                0,                         # 2 计数器: 0~255，暂时不用
+                2,                         # 3 命令数量: 总是2 (M1 和 M2)
+                self.CONTROL_MODE_ENUM["Thetam"],     # 4 M1 Mode
+                param1,                    # 5-6 M1 Command 
+                self.CONTROL_MODE_ENUM["Thetam"],     # 7 M2 Mode
+                param2,                    # 8-9 M2 Command
+                self.RX_FRAME_TAIL         # 10 帧尾: 0x1E
+            )
+
+            # 3. 发送并通过串口发送
+            self.ser.write(data)
+            
+            return True
+            
+        except Exception as e:
+            print(f"[发送错误]: {e}")
+            return False
+    
+    def send_speed_command(self, target_index: int, omega1_rad_per_sec: float, omega2_rad_per_sec: float) -> bool:
+        """
+        根据下位机 Rx 协议发送 2 条关节速度(Omegam)指令
+        :param target_index: 目标设备的索引 (0,1,2,3 对应 Finger1-Finger4)
+        :param omega1_rad_per_sec: 电机 1 的目标角速度 (弧度/秒)
+        :param omega2_rad_per_sec: 电机 2 的目标角速度 (弧度/秒)
+        """
+        if not self.is_connected or not self.ser:
+            print("[发送失败] 串口未连接")
+            return False
+
+        # 验证target_index范围
+        if target_index < 0 or target_index > 3:
+            print(f"[发送失败] target_index 超出范围 (0-3): {target_index}")
+            return False
+            
+        # 通过target_index索引获取对应的target_id
+        finger_keys = list(self.RX_TARGET_ID.keys())
+        target_id = self.RX_TARGET_ID[finger_keys[target_index]]
+
+        # 1. 浮点数转化为 16-bit 有符号整数 (反量化)
+        param1 = int(omega1_rad_per_sec)
+        param2 = int(omega2_rad_per_sec)
+
+        try:
+            data = struct.pack('<BBBBB h B h B',
+                self.RX_FRAME_HEADER,      # 0 帧头: 0x3B
+                target_id,                 # 1 ID: 路由对象 (从RX_TARGET_ID字典获取)
+                0,                         # 2 计数器: 0~255，暂时不用
+                2,                         # 3 命令数量: 总是2 (M1 和 M2)
+                self.CONTROL_MODE_ENUM["Omegam"],     # 4 M1 Mode
+                param1,                    # 5-6 M1 Command 
+                self.CONTROL_MODE_ENUM["Omegam"],     # 7 M2 Mode
+                param2,                    # 8-9 M2 Command
+                self.RX_FRAME_TAIL         # 10 帧尾: 0x1E
+            )
+
+            # 3. 发送并通过串口发送
+            self.ser.write(data)
+            
+            return True
+            
+        except Exception as e:
+            print(f"[发送错误]: {e}")
+            return False
