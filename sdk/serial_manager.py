@@ -29,21 +29,24 @@ class SerialManager:
     # --- 下位机手指索引与ID ---
     RX_TARGET_ID               = { 
         "Finger0": 0xB0,
-        "Finger1": 0xBF,
-        "Finger2": 0xAA,
-        "Finger3": 0x23
+        "Finger1": 0xB1,
+        "Finger2": 0xB2,
+        "Finger3": 0xB3,
+        "Finger4": 0xB4
     }
 
     # --- 特定数据的序号 ---
     CURVE_MOTOR0_THETA_INDEX = 0
-    CURVE_MOTOR0_OMEGA_INDEX = 4
+    CURVE_MOTOR0_OMEGA_INDEX = 1
     CURVE_MOTOR0_IQ_INDEX = 2
     CURVE_MOTOR0_ID_INDEX = 3
+    CURVE_MOTOR0_RESERVED_INDEX = 4
 
-    CURVE_MOTOR1_THETA_INDEX = 1
-    CURVE_MOTOR1_OMEGA_INDEX = 5
-    CURVE_MOTOR1_IQ_INDEX = 6
-    CURVE_MOTOR1_ID_INDEX = 7
+    CURVE_MOTOR1_THETA_INDEX = 5
+    CURVE_MOTOR1_OMEGA_INDEX = 6
+    CURVE_MOTOR1_IQ_INDEX = 7
+    CURVE_MOTOR1_ID_INDEX = 8
+    CURVE_MOTOR1_RESERVED_INDEX = 9
 
 
     def __init__(self, port, baudrate=115200, timeout=0.1):
@@ -66,19 +69,16 @@ class SerialManager:
         # --- 状态与统计 ---
         self.rx_curve_count = 0
         self.rx_sample_count = 0
-        self.rx_data_speed = 500
-        
-        # 丢包统计
-        self.expected_frame_counter = 0
-        self.total_packets_received = 0
-        self.total_packets_lost = 0
+
+        # 为每个手指分别统计丢包（4个手指：Finger0-Finger3）
+        self.finger_stats = {
+            0: {'expected_counter': 0, 'received': 0, 'lost': 0, 'loss_rate': 0.0, 'last_sec_received': 0, 'last_sec_lost': 0},
+            1: {'expected_counter': 0, 'received': 0, 'lost': 0, 'loss_rate': 0.0, 'last_sec_received': 0, 'last_sec_lost': 0},
+            2: {'expected_counter': 0, 'received': 0, 'lost': 0, 'loss_rate': 0.0, 'last_sec_received': 0, 'last_sec_lost': 0},
+            3: {'expected_counter': 0, 'received': 0, 'lost': 0, 'loss_rate': 0.0, 'last_sec_received': 0, 'last_sec_lost': 0}
+        }
         self.last_loss_calc_time = time.time()
-        
-        
-        # 暴露的当前状态
-        self.current_loss_rate = 0.0
-        self.last_sec_received = 0
-        self.last_sec_lost = 0
+
 
         # 保存每个手指的最新有效帧
         self.latest_frame_finger_0 = None
@@ -102,9 +102,6 @@ class SerialManager:
             
             # 连接时重置所有统计
             self.reset_packet_loss_stats()
-            self.current_loss_rate = 0.0
-            self.last_sec_received = 0
-            self.last_sec_lost = 0
             
             self._stop_event.clear()
             self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
@@ -130,10 +127,15 @@ class SerialManager:
             print(f"[断开连接] 串口 {self.port} 已关闭。")
 
     def reset_packet_loss_stats(self):
-        """重置丢包率累加器"""
-        self.expected_frame_counter = 0
-        self.total_packets_received = 0
-        self.total_packets_lost = 0
+        """重置所有手指的丢包率累加器"""
+        for finger_id in self.finger_stats:
+            self.finger_stats[finger_id]['expected_counter'] = 0
+            self.finger_stats[finger_id]['received'] = 0
+            self.finger_stats[finger_id]['lost'] = 0
+            self.finger_stats[finger_id]['loss_rate'] = 0.0
+            self.finger_stats[finger_id]['last_sec_received'] = 0
+            self.finger_stats[finger_id]['last_sec_lost'] = 0
+
 
     # ========================== 核心解析逻辑 ==========================
 
@@ -167,19 +169,23 @@ class SerialManager:
                     # 1. 周期性计算丢包率 (1秒一次)
                     current_time = time.time()
                     if current_time - self.last_loss_calc_time >= 1.0:
-                        total_packets = self.total_packets_received + self.total_packets_lost
-                        
-                        # 保存过去1秒的绝对数量供UI读取
-                        self.last_sec_received = self.total_packets_received
-                        self.last_sec_lost = self.total_packets_lost
-                        
-                        if total_packets > 0:
-                            self.current_loss_rate = (self.total_packets_lost / total_packets) * 100.0
-                        else:
-                            self.current_loss_rate = 0.0 # 若没有数据包更新，强制设为0
-                            
-                        # 计算完后清零，开启下一秒的统计
-                        self.reset_packet_loss_stats()
+                        for stats in self.finger_stats.values():
+                            recv = stats['received']
+                            lost = stats['lost']
+                            total = recv + lost
+
+                            stats['last_sec_received'] = recv
+                            stats['last_sec_lost'] = lost
+
+                            if total > 0:
+                                stats['loss_rate'] = (lost / total) * 100.0
+                            else:
+                                stats['loss_rate'] = 0.0
+
+                            # 清零，开启下一秒统计
+                            stats['received'] = 0
+                            stats['lost'] = 0
+
                         self.last_loss_calc_time = current_time
 
                     # 2. 读取全部可用数据并追加到缓冲区
@@ -252,27 +258,39 @@ class SerialManager:
                 self.rx_sample_count = sample_count
                 device_id = frame[1]
                 frame_counter = frame[2]
-                
-                # 丢包检测累加
-                self.total_packets_received += 1
-                if self.total_packets_received > 1:
-                    expected = self.expected_frame_counter
-                    actual = frame_counter
-                    if actual != expected:
-                        lost = (actual - expected) if actual >= expected else (256 - expected + actual)
-                        if 0 < lost < 255:
-                            self.total_packets_lost += lost
-                            
-                self.expected_frame_counter = (frame_counter + 1) % 256
+
+                # 根据mcu_id确定finger_id (0xB0->0, 0xB1->1, 0xB2->2, 0xB3->3)
+                finger_id = None
+                if mcu_id == self.RX_TARGET_ID['Finger0']:
+                    finger_id = 0
+                elif mcu_id == self.RX_TARGET_ID['Finger1']:
+                    finger_id = 1
+                elif mcu_id == self.RX_TARGET_ID['Finger2']:
+                    finger_id = 2
+                elif mcu_id == self.RX_TARGET_ID['Finger3']:
+                    finger_id = 3
+
+                # 分别统计每个手指的丢包
+                if finger_id is not None and finger_id in self.finger_stats:
+                    stats = self.finger_stats[finger_id]
+                    stats['received'] += 1
+
+                    if stats['received'] > 1:
+                        expected = stats['expected_counter']
+                        actual = frame_counter
+                        if actual != expected:
+                            lost = (actual - expected) if actual >= expected else (256 - expected + actual)
+                            if 0 < lost < 255:
+                                stats['lost'] += lost
+
+                    stats['expected_counter'] = (frame_counter + 1) % 256
                 
                 # 解析硬件时间戳 (小端 4字节)
                 timestamp_ms = struct.unpack('<I', frame[4:8])[0]
                 if func_byte == self.TX_FUNC_HIGH_SPEED:
                     base_hw_time = timestamp_ms / self.INNER_FREQ
-                    self.rx_data_speed = 10000
                 else:
                     base_hw_time = timestamp_ms / self.OUTER_FREQ
-                    self.rx_data_speed = 500
                     
                 # 解析 Max_Abs 数组
                 max_abs_values = [frame[self.TX_HEADER_SIZE + i] for i in range(curve_count)]
@@ -314,13 +332,30 @@ class SerialManager:
                     self.latest_frame_finger_3 = parsed_frame
                     matched = True
 
+                if mcu_id == self.RX_TARGET_ID['Finger4']:
+                    self.receive_queue_mcu_3.put(parsed_frame)
+                    self.latest_frame_finger_3 = parsed_frame
+                    matched = True
+
                 if not matched:
-                    print(f"[警告] 未识别的 mcu_id: 0x{mcu_id:02X}, 期望值: Finger0=0x01, Finger1=0xBF, Finger2=0xAA, Finger3=0x23")
+                    print(f"[警告] 未识别的 mcu_id: 0x{mcu_id:02X}")
                 
                 # 移除已解析的数据
                 del self.serial_buffer[:frame_length]
             else:
                 del self.serial_buffer[:1]
+
+    # ========================== 获取统计数据接口 ==========================
+
+    def get_finger_stats(self, finger_id):
+        """获取指定手指的统计数据"""
+        if finger_id in self.finger_stats:
+            return self.finger_stats[finger_id]
+        return None
+
+    def get_all_finger_stats(self):
+        """获取所有手指的统计数据"""
+        return self.finger_stats
 
     # ========================== 获取数据接口 ==========================
 
@@ -424,7 +459,121 @@ class SerialManager:
         if self.latest_frame_finger_0 and self.latest_frame_finger_0['samples'] and self.latest_frame_finger_0['samples'][-1]:
             return self.latest_frame_finger_0['samples'][-1][self.CURVE_MOTOR1_ID_INDEX]
         return None
-    
+
+    # ========================== 手指1数据获取接口 ==========================
+
+    def get_latest_data_finger_1_motor_0_theta(self):
+        """获取手指1的电机0的当前角度"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples'] and self.latest_frame_finger_1['samples'][-1]:
+            return self.latest_frame_finger_1['samples'][-1][self.CURVE_MOTOR0_THETA_INDEX]
+        return None
+
+    def get_latest_data_finger_1_motor_0_omega(self):
+        """获取手指1的电机0的当前角速度"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples'] and self.latest_frame_finger_1['samples'][-1]:
+            return self.latest_frame_finger_1['samples'][-1][self.CURVE_MOTOR0_OMEGA_INDEX]
+        return None
+
+    def get_latest_data_finger_1_motor_0_iq(self):
+        """获取手指1的电机0的当前iq电流"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples'] and self.latest_frame_finger_1['samples'][-1]:
+            return self.latest_frame_finger_1['samples'][-1][self.CURVE_MOTOR0_IQ_INDEX]
+        return None
+
+    def get_latest_data_finger_1_motor_1_theta(self):
+        """获取手指1的电机1的当前角度"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples'] and self.latest_frame_finger_1['samples'][-1]:
+            return self.latest_frame_finger_1['samples'][-1][self.CURVE_MOTOR1_THETA_INDEX]
+        return None
+
+    def get_latest_data_finger_1_motor_1_omega(self):
+        """获取手指1的电机1的当前角速度"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples'] and self.latest_frame_finger_1['samples'][-1]:
+            return self.latest_frame_finger_1['samples'][-1][self.CURVE_MOTOR1_OMEGA_INDEX]
+        return None
+
+    def get_latest_data_finger_1_motor_1_iq(self):
+        """获取手指1的电机1的当前iq电流"""
+        if self.latest_frame_finger_1 and self.latest_frame_finger_1['samples'] and self.latest_frame_finger_1['samples'][-1]:
+            return self.latest_frame_finger_1['samples'][-1][self.CURVE_MOTOR1_IQ_INDEX]
+        return None
+
+    # ========================== 手指2数据获取接口 ==========================
+
+    def get_latest_data_finger_2_motor_0_theta(self):
+        """获取手指2的电机0的当前角度"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples'] and self.latest_frame_finger_2['samples'][-1]:
+            return self.latest_frame_finger_2['samples'][-1][self.CURVE_MOTOR0_THETA_INDEX]
+        return None
+
+    def get_latest_data_finger_2_motor_0_omega(self):
+        """获取手指2的电机0的当前角速度"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples'] and self.latest_frame_finger_2['samples'][-1]:
+            return self.latest_frame_finger_2['samples'][-1][self.CURVE_MOTOR0_OMEGA_INDEX]
+        return None
+
+    def get_latest_data_finger_2_motor_0_iq(self):
+        """获取手指2的电机0的当前iq电流"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples'] and self.latest_frame_finger_2['samples'][-1]:
+            return self.latest_frame_finger_2['samples'][-1][self.CURVE_MOTOR0_IQ_INDEX]
+        return None
+
+    def get_latest_data_finger_2_motor_1_theta(self):
+        """获取手指2的电机1的当前角度"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples'] and self.latest_frame_finger_2['samples'][-1]:
+            return self.latest_frame_finger_2['samples'][-1][self.CURVE_MOTOR1_THETA_INDEX]
+        return None
+
+    def get_latest_data_finger_2_motor_1_omega(self):
+        """获取手指2的电机1的当前角速度"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples'] and self.latest_frame_finger_2['samples'][-1]:
+            return self.latest_frame_finger_2['samples'][-1][self.CURVE_MOTOR1_OMEGA_INDEX]
+        return None
+
+    def get_latest_data_finger_2_motor_1_iq(self):
+        """获取手指2的电机1的当前iq电流"""
+        if self.latest_frame_finger_2 and self.latest_frame_finger_2['samples'] and self.latest_frame_finger_2['samples'][-1]:
+            return self.latest_frame_finger_2['samples'][-1][self.CURVE_MOTOR1_IQ_INDEX]
+        return None
+
+    # ========================== 手指3数据获取接口 ==========================
+
+    def get_latest_data_finger_3_motor_0_theta(self):
+        """获取手指3的电机0的当前角度"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples'] and self.latest_frame_finger_3['samples'][-1]:
+            return self.latest_frame_finger_3['samples'][-1][self.CURVE_MOTOR0_THETA_INDEX]
+        return None
+
+    def get_latest_data_finger_3_motor_0_omega(self):
+        """获取手指3的电机0的当前角速度"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples'] and self.latest_frame_finger_3['samples'][-1]:
+            return self.latest_frame_finger_3['samples'][-1][self.CURVE_MOTOR0_OMEGA_INDEX]
+        return None
+
+    def get_latest_data_finger_3_motor_0_iq(self):
+        """获取手指3的电机0的当前iq电流"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples'] and self.latest_frame_finger_3['samples'][-1]:
+            return self.latest_frame_finger_3['samples'][-1][self.CURVE_MOTOR0_IQ_INDEX]
+        return None
+
+    def get_latest_data_finger_3_motor_1_theta(self):
+        """获取手指3的电机1的当前角度"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples'] and self.latest_frame_finger_3['samples'][-1]:
+            return self.latest_frame_finger_3['samples'][-1][self.CURVE_MOTOR1_THETA_INDEX]
+        return None
+
+    def get_latest_data_finger_3_motor_1_omega(self):
+        """获取手指3的电机1的当前角速度"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples'] and self.latest_frame_finger_3['samples'][-1]:
+            return self.latest_frame_finger_3['samples'][-1][self.CURVE_MOTOR1_OMEGA_INDEX]
+        return None
+
+    def get_latest_data_finger_3_motor_1_iq(self):
+        """获取手指3的电机1的当前iq电流"""
+        if self.latest_frame_finger_3 and self.latest_frame_finger_3['samples'] and self.latest_frame_finger_3['samples'][-1]:
+            return self.latest_frame_finger_3['samples'][-1][self.CURVE_MOTOR1_IQ_INDEX]
+        return None
+
     # ========================== 发送数据接口 ==========================
 
     def send_theta_command(self, target_index: int, theta1_rad: float, theta2_rad: float) -> bool:

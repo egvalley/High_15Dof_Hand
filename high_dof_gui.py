@@ -51,10 +51,17 @@ class KinematicsGUI:
 
         self.status_label = ttk.Label(serial_frame, text="状态: 未连接", foreground="red", width=12)
         self.status_label.pack(side="left", padx=5)
-        
-        # 新增：丢包率与统计数量显示标签
-        self.loss_rate_label = ttk.Label(serial_frame, text="丢包率: 0.00% (收: 0, 丢: 0)", foreground="black", font=("Arial", 10, "bold"))
-        self.loss_rate_label.pack(side="left", padx=10)
+
+        # --- 丢包率统计区 ---
+        stats_frame = ttk.LabelFrame(self.root, text="丢包率统计 (每秒更新)")
+        stats_frame.pack(fill="x", padx=10, pady=5)
+
+        # 为每个手指创建统计标签
+        self.finger_stats_labels = []
+        for i in range(4):
+            label = ttk.Label(stats_frame, text=f"手指{i}: 0.00% (收:0, 丢:0)", foreground="green", font=("Arial", 9))
+            label.pack(side="left", padx=10, pady=5)
+            self.finger_stats_labels.append(label)
 
         # --- 2. 实时曲线数据打印区 ---
         data_frame = ttk.LabelFrame(self.root, text="实时串口数据 (Latest Curve Values)")
@@ -115,7 +122,9 @@ class KinematicsGUI:
             self.serial_mgr.disconnect()
             self.conn_btn.config(text="连接串口")
             self.status_label.config(text="状态: 未连接", foreground="red")
-            self.loss_rate_label.config(text="丢包率: 0.00% (收: 0, 丢: 0)", foreground="black") # 断开时清空显示
+            # 断开时清空所有手指的统计显示
+            for i, label in enumerate(self.finger_stats_labels):
+                label.config(text=f"手指{i}: 0.00% (收:0, 丢:0)", foreground="green")
             for btn in self.send_btns: btn.config(state="disabled")
         else:
             port = self.port_entry.get()
@@ -172,32 +181,38 @@ class KinematicsGUI:
     def _update_loop(self):
         """GUI 刷新循环"""
         if self.serial_mgr and self.serial_mgr.is_connected:
-            
-            # 1. 实时更新 丢包率、接收包裹数、丢失包裹数
-            loss_rate = self.serial_mgr.current_loss_rate
-            recv_cnt = self.serial_mgr.last_sec_received
-            lost_cnt = self.serial_mgr.last_sec_lost
-            
-            color = "red" if loss_rate > 5.0 else ("orange" if loss_rate > 0 else "green")
-            self.loss_rate_label.config(text=f"丢包率: {loss_rate:.2f}% (收: {recv_cnt}, 丢: {lost_cnt})", foreground=color)
+
+            # 1. 实时更新每个手指的丢包率、接收包裹数、丢失包裹数
+            all_stats = self.serial_mgr.get_all_finger_stats()
+            for finger_id, label in enumerate(self.finger_stats_labels):
+                if finger_id in all_stats:
+                    stats = all_stats[finger_id]
+                    loss_rate = stats['loss_rate']
+                    recv_cnt = stats['last_sec_received']
+                    lost_cnt = stats['last_sec_lost']
+
+                    color = "red" if loss_rate > 5.0 else ("orange" if loss_rate > 0 else "green")
+                    label.config(text=f"手指{finger_id}: {loss_rate:.2f}% (收:{recv_cnt}, 丢:{lost_cnt})", foreground=color)
             
             # 2. 获取4个手指的最新curve数据并显示
             self.curve_text.config(state="normal")
             self.curve_text.delete(1.0, tk.END)
 
             display_lines = []
-            for i in range(1):
-                getter_motor_0_theta_method = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_0_theta")
-                getter_motor_1_theta_method = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_1_theta")
-                motor_0_theta_data = getter_motor_0_theta_method()
-                motor_1_theta_data = getter_motor_1_theta_method()
+            for i in range(4):
+                m0_theta = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_0_theta")()
+                m0_omega = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_0_omega")()
+                m0_iq = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_0_iq")()
+                m1_theta = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_1_theta")()
+                m1_omega = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_1_omega")()
+                m1_iq = getattr(self.serial_mgr, f"get_latest_data_finger_{i}_motor_1_iq")()
 
-                if motor_0_theta_data and motor_1_theta_data:
-                    # Display motor names with their theta values
-                    display_str = f"motor_0_theta:{motor_0_theta_data:.3f}, motor_1_theta:{motor_1_theta_data:.3f}"
-                    display_lines.append(f"[手指 {i}] {display_str}")
+                if all(v is not None for v in [m0_theta, m0_omega, m0_iq, m1_theta, m1_omega, m1_iq]):
+                    display_str = (f"M0[θ:{m0_theta:.3f} ω:{m0_omega:.3f} Iq:{m0_iq:.3f}] "
+                                   f"M1[θ:{m1_theta:.3f} ω:{m1_omega:.3f} Iq:{m1_iq:.3f}]")
+                    display_lines.append(f"[手指{i}] {display_str}")
                 else:
-                    display_lines.append(f"[手指 {i}] 等待数据中...")
+                    display_lines.append(f"[手指{i}] 等待数据中...")
 
             self.curve_text.insert(tk.END, "\n".join(display_lines))
             self.curve_text.config(state="disabled")
