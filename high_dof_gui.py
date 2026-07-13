@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from functools import partial
 
 from sdk.serial_manager import SerialManager
+from sdk.serial_commander import SerialCommander
 
 
 class ScrollableFrame(ttk.Frame):
@@ -51,6 +52,7 @@ class HighDofHandGUI:
         self.root.geometry("1180x840")
 
         self.serial_mgr = None
+        self.commander = None
         self.entries = {}          # 控制页输入框引用
         self._ui_connected = False  # UI 认为的连接态(用于检测后台自动断开)
 
@@ -308,6 +310,7 @@ class HighDofHandGUI:
                 return
             self.serial_mgr = SerialManager(port, baud)
             if self.serial_mgr.connect():
+                self.commander = SerialCommander(self.serial_mgr)
                 self._ui_connected = True
                 self.conn_btn.config(text="断开串口")
                 self.status_label.config(text=f"状态: 已连接 {port}", foreground="green")
@@ -335,7 +338,7 @@ class HighDofHandGUI:
             self.entries[k1].config(state="normal" if sel in ("both", 1) else "disabled")
 
     def _ensure_connected(self):
-        if not (self.serial_mgr and self.serial_mgr.is_connected):
+        if not (self.serial_mgr and self.serial_mgr.is_connected and self.commander):
             messagebox.showwarning("警告", "串口未连接")
             return False
         return True
@@ -375,10 +378,10 @@ class HighDofHandGUI:
 
     def _do_state(self, state_key, label):
         self._run(f"状态→{label}",
-                  lambda idx: self.serial_mgr.send_state(idx, state_key, motor=self._motor_sel()))
+                  lambda idx: self.commander.send_state(idx, state_key, motor=self._motor_sel()))
 
     def _do_simple(self, fn, label):
-        self._run(label, lambda idx: getattr(self.serial_mgr, fn)(idx, motor=self._motor_sel()))
+        self._run(label, lambda idx: getattr(self.commander, fn)(idx, motor=self._motor_sel()))
 
     def _do_paired(self, fn, keys, label):
         try:
@@ -386,7 +389,7 @@ class HighDofHandGUI:
         except ValueError:
             messagebox.showwarning("输入错误", f"{label}: 请输入有效数字")
             return
-        self._run(f"{label} [{v0}, {v1}]", lambda idx: getattr(self.serial_mgr, fn)(idx, v0, v1))
+        self._run(f"{label} [{v0}, {v1}]", lambda idx: getattr(self.commander, fn)(idx, v0, v1))
 
     def _do_kv(self, fn, keys, label):
         try:
@@ -395,7 +398,7 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", f"{label}: 请输入有效数字")
             return
         self._run(f"{label} [kp={kp}, ki={ki}]",
-                  lambda idx: getattr(self.serial_mgr, fn)(idx, kp, ki, motor=self._motor_sel()))
+                  lambda idx: getattr(self.commander, fn)(idx, kp, ki, motor=self._motor_sel()))
 
     def _do_impedance(self):
         try:
@@ -404,7 +407,7 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", "阻抗参数: 请输入有效数字")
             return
         self._run(f"阻抗 [k={k}, b={b}, j={j}]",
-                  lambda idx: self.serial_mgr.send_impedance_params(idx, k, b, j, motor=self._motor_sel()))
+                  lambda idx: self.commander.send_impedance_params(idx, k, b, j, motor=self._motor_sel()))
 
     def _do_traj(self):
         try:
@@ -414,7 +417,7 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", "轨迹参数: 请输入有效数字")
             return
         self._run(f"轨迹 [v={v}, a={a}, p=({p0},{p1})]",
-                  lambda idx: self.serial_mgr.send_trajectory(idx, v, a, p0, p1))
+                  lambda idx: self.commander.send_trajectory(idx, v, a, p0, p1))
 
     def _do_traj_pos_only(self):
         try:
@@ -423,7 +426,7 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", "轨迹位置: 请输入有效数字")
             return
         self._run(f"轨迹位置 [{p0}, {p1}]",
-                  lambda idx: self.serial_mgr.send_trajectory_pos(idx, p0, p1))
+                  lambda idx: self.commander.send_trajectory_pos(idx, p0, p1))
 
     def _do_raw(self):
         try:
@@ -433,7 +436,7 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", "原始指令: 请输入有效整数")
             return
         self._run(f"RAW mode={mode} [{p0}, {p1}]",
-                  lambda idx: self.serial_mgr.send_raw_command(idx, mode, p0, p1))
+                  lambda idx: self.commander.send_raw_command(idx, mode, p0, p1))
 
     # ---- 日志 ----
     def _log(self, msg):
@@ -471,47 +474,4 @@ class HighDofHandGUI:
                     lr = stats["loss_rate"]
                     ptag = "err" if lr > 5.0 else ("warn" if lr > 0 else "ok")
                     meta = f"丢包 {lr:.1f}% (收:{stats['last_sec_received']} 丢:{stats['last_sec_lost']})"
-                self.tree.item(f"mcu{i}", values=("", "", "", "", "", meta), tags=("mcu", ptag))
-
-                for m in range(SerialManager.MOTORS_PER_MCU):
-                    fields = mgr.motor_fields_from_frame(frame, m)
-                    if fields is None or fields["state_code"] is None:
-                        self.tree.item(f"mcu{i}_m{m}", values=("—", "—", "—", "—", "—", ""), tags=("nodata",))
-                        continue
-
-                    name = fields["state_name"]
-                    state_str = f"{name} ({fields['state_code']})"
-                    if name.endswith("Error") or name == "InnerOuterMismatch":
-                        mtag = "err"
-                    elif "Disable" in name or name == "StartupReady":
-                        mtag = "warn"
-                    else:
-                        mtag = "ok"
-
-                    self.tree.item(
-                        f"mcu{i}_m{m}",
-                        values=(state_str, self._fmt(fields["theta"]), self._fmt(fields["omega"]),
-                                self._fmt(fields["acl"]), self._fmt(fields["torque"]), ""),
-                        tags=(mtag,),
-                    )
-        elif self._ui_connected:
-            # 后台读线程因串口异常(如拔出)自动断开时, 复位一次 UI 状态
-            self._ui_connected = False
-            self.conn_btn.config(text="连接串口")
-            self.status_label.config(text="状态: 连接已断开", foreground="red")
-            self._reset_tree_nodata()
-
-        self.root.after(50, self._update_loop)
-
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = HighDofHandGUI(root)
-
-    def on_closing():
-        if app.serial_mgr:
-            app.serial_mgr.disconnect()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
+                self.tree.item(f"mcu{i}", values=("", "", "", "", "",
