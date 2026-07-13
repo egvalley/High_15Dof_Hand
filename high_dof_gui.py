@@ -51,7 +51,8 @@ class HighDofHandGUI:
         self.root.geometry("1180x840")
 
         self.serial_mgr = None
-        self.entries = {}   # 控制页输入框引用
+        self.entries = {}          # 控制页输入框引用
+        self._ui_connected = False  # UI 认为的连接态(用于检测后台自动断开)
 
         self._setup_ui()
         self.root.after(50, self._update_loop)
@@ -282,8 +283,10 @@ class HighDofHandGUI:
     def _toggle_serial(self):
         if self.serial_mgr and self.serial_mgr.is_connected:
             self.serial_mgr.disconnect()
+            self._ui_connected = False
             self.conn_btn.config(text="连接串口")
             self.status_label.config(text="状态: 未连接", foreground="red")
+            self._reset_tree_nodata()
         else:
             port = self.port_entry.get().strip()
             try:
@@ -293,6 +296,7 @@ class HighDofHandGUI:
                 return
             self.serial_mgr = SerialManager(port, baud)
             if self.serial_mgr.connect():
+                self._ui_connected = True
                 self.conn_btn.config(text="断开串口")
                 self.status_label.config(text=f"状态: 已连接 {port}", foreground="green")
                 self._log(f"已连接 {port} @ {baud}")
@@ -405,13 +409,22 @@ class HighDofHandGUI:
     def _fmt(v):
         return f"{v:.3f}" if v is not None else "—"
 
-    def _update_loop(self):
-        if self.serial_mgr and self.serial_mgr.is_connected:
-            for i in range(SerialManager.NUM_MCU):
-                stats = self.serial_mgr.get_mcu_stats(i)
-                has = self.serial_mgr.has_data(i)
+    def _reset_tree_nodata(self):
+        """把所有 MCU/电机 行复位为无数据。"""
+        for i in range(SerialManager.NUM_MCU):
+            self.tree.item(f"mcu{i}", values=("", "", "", "", "", "无数据"), tags=("mcu", "nodata"))
+            for m in range(SerialManager.MOTORS_PER_MCU):
+                self.tree.item(f"mcu{i}_m{m}", values=("—", "—", "—", "—", "—", ""), tags=("nodata",))
 
-                if not has:
+    def _update_loop(self):
+        mgr = self.serial_mgr
+        if mgr and mgr.is_connected:
+            self._ui_connected = True
+            for i in range(SerialManager.NUM_MCU):
+                stats = mgr.get_mcu_stats(i)
+                frame = mgr.get_latest_frame(i)   # 每个 MCU 只取一次快照, 保证整行同帧一致
+
+                if frame is None:
                     meta, ptag = "无数据", "nodata"
                 else:
                     lr = stats["loss_rate"]
@@ -420,16 +433,14 @@ class HighDofHandGUI:
                 self.tree.item(f"mcu{i}", values=("", "", "", "", "", meta), tags=("mcu", ptag))
 
                 for m in range(SerialManager.MOTORS_PER_MCU):
-                    code, name = self.serial_mgr.get_motor_state(i, m)
-                    state_str = f"{name} ({code})" if code is not None else "—"
-                    theta = self.serial_mgr.get_motor_value(i, m, "theta")
-                    omega = self.serial_mgr.get_motor_value(i, m, "omega")
-                    acl = self.serial_mgr.get_motor_value(i, m, "acl")
-                    torque = self.serial_mgr.get_motor_value(i, m, "torque")
+                    fields = mgr.motor_fields_from_frame(frame, m)
+                    if fields is None or fields["state_code"] is None:
+                        self.tree.item(f"mcu{i}_m{m}", values=("—", "—", "—", "—", "—", ""), tags=("nodata",))
+                        continue
 
-                    if code is None:
-                        mtag = "nodata"
-                    elif name.endswith("Error") or name == "InnerOuterMismatch":
+                    name = fields["state_name"]
+                    state_str = f"{name} ({fields['state_code']})"
+                    if name.endswith("Error") or name == "InnerOuterMismatch":
                         mtag = "err"
                     elif "Disable" in name or name == "StartupReady":
                         mtag = "warn"
@@ -438,9 +449,17 @@ class HighDofHandGUI:
 
                     self.tree.item(
                         f"mcu{i}_m{m}",
-                        values=(state_str, self._fmt(theta), self._fmt(omega), self._fmt(acl), self._fmt(torque), ""),
+                        values=(state_str, self._fmt(fields["theta"]), self._fmt(fields["omega"]),
+                                self._fmt(fields["acl"]), self._fmt(fields["torque"]), ""),
                         tags=(mtag,),
                     )
+        elif self._ui_connected:
+            # 后台读线程因串口异常(如拔出)自动断开时, 复位一次 UI 状态
+            self._ui_connected = False
+            self.conn_btn.config(text="连接串口")
+            self.status_label.config(text="状态: 连接已断开", foreground="red")
+            self._reset_tree_nodata()
+
         self.root.after(50, self._update_loop)
 
 

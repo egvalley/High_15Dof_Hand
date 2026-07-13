@@ -33,11 +33,13 @@ class SerialManager:
       [0]        帧头 0x3B
       [1]        目标 ID (0xB0~0xB7)
       [2]        帧计数器 (暂不使用)
-      [3]        Func = 0x03 (Router_Comm_USB_USART_Cmd)
+      [3]        Func: 0x03=USB/USART 直连指令; 0x04=FDCAN 转发指令 (默认, 8 个 MCU 都在 CAN 总线上)
       [4]        命令数量 C
       [5+i*3]    Control_Mode
       [6+i*3 .. 7+i*3]  Command (int16, 小端)
       [末]       帧尾 0x1E
+      走 FDCAN 通道时整帧长度须对齐到 CAN FD 合法长度(8/12/16/24/...)，不足部分在帧尾之后补零，
+      下位机解析时会忽略帧尾之后的填充字节。
       下位机把 前 C/2 条指令派发给 电机0(app1), 后 C/2 条派发给 电机1(app2)，故 C 必须为偶数。
       线上定点值 = round(物理值 * scale)，见 MODE_SCALE。
     """
@@ -58,7 +60,13 @@ class SerialManager:
     # ==================== Rx (上位机 -> 下位机) 协议常量 ====================
     RX_FRAME_HEADER = 0x3B
     RX_FRAME_TAIL   = 0x1E
-    RX_FUNC_CMD     = 0x03   # Router_Comm_USB_USART_Cmd
+    # 指令通道 Func 字节 (对应 router.h RouterRxCommFunc)
+    RX_FUNC_USB_USART_CMD = 0x03   # Router_Comm_USB_USART_Cmd (直连 USB/USART 的设备)
+    RX_FUNC_FDCAN_CMD     = 0x04   # Router_Comm_FDCAN_Cmd     (经桥接转发到 FDCAN 总线上的 MCU)
+    # 8 个电机 MCU 都挂在 FDCAN 总线上, 故指令默认走 FDCAN 通道
+    RX_FUNC_CMD           = RX_FUNC_FDCAN_CMD
+    # CAN FD 合法帧长(字节): 走 FDCAN 时整帧长度必须对齐到其中之一 (router.c: "需要确保fdcan长度符合")
+    CANFD_VALID_SIZES     = (8, 12, 16, 20, 24, 32, 48, 64)
 
     # ==================== MCU 列表 ====================
     NUM_MCU     = 8
@@ -71,7 +79,6 @@ class SerialManager:
     LOW_SPEED_CURVE_COUNT = MOTORS_PER_MCU * CURVES_PER_MOTOR  # 10
     # 每个电机 5 条曲线, 第 1 条为状态机; 顺序即 router.c 注册顺序
     MOTOR_CURVE_FIELDS = ["state", "theta", "omega", "acl", "torque"]
-    STATE_FIELD_INDEX  = 0  # "state" 在 MOTOR_CURVE_FIELDS 中的下标
 
     # ==================== 控制模式枚举 (对应 router.h RouterControlMode) ====================
     MODE_FOC_UQ                      = 2
@@ -464,6 +471,31 @@ class SerialManager:
         code = int(round(val))
         return code, self.MOTOR_STATE_NAME.get(code, f"Unknown({code})")
 
+    def motor_fields_from_frame(self, frame, motor_index):
+        """
+        从单个帧快照中提取某电机(0/1)的全部字段, 保证是同一帧的一致数据。
+        返回 dict(state/theta/omega/acl/torque + state_code/state_name) 或 None。
+        用法: GUI 每个 MCU 只调一次 get_latest_frame() 取快照, 再对两个电机各调用本函数,
+              避免逐字段读取时被后台读线程换帧, 导致一行里混入两帧数据。
+        """
+        if not frame or not frame["samples"]:
+            return None
+        if frame["curve_count"] != self.LOW_SPEED_CURVE_COUNT:
+            return None
+        if not (0 <= motor_index < self.MOTORS_PER_MCU):
+            return None
+        row = frame["samples"][-1]
+        base = motor_index * self.CURVES_PER_MOTOR
+        out = {}
+        for off, field in enumerate(self.MOTOR_CURVE_FIELDS):
+            ci = base + off
+            out[field] = row[ci] if ci < len(row) else None
+        state_val = out.get("state")
+        code = int(round(state_val)) if state_val is not None else None
+        out["state_code"] = code
+        out["state_name"] = self.MOTOR_STATE_NAME.get(code, f"Unknown({code})") if code is not None else None
+        return out
+
     def get_mcu_stats(self, mcu):
         return self.mcu_stats[self._to_index(mcu)]
 
@@ -490,19 +522,34 @@ class SerialManager:
         v = int(round(v))
         return max(-32768, min(32767, v))
 
+    @classmethod
+    def _canfd_pad(cls, frame):
+        """把帧长补零到最近的 CAN FD 合法长度; 填充字节位于帧尾之后, 下位机解析时忽略。"""
+        n = len(frame)
+        for s in cls.CANFD_VALID_SIZES:
+            if n <= s:
+                return frame + bytes(s - n)
+        return frame  # >64 不处理(命令帧不会到这么长)
+
     def _quantize(self, mode, value):
         """按 MODE_SCALE 把物理值换算为线上 int16 定点值。"""
         scale = self.MODE_SCALE.get(mode, 1.0)
         return self._clamp_int16(value * scale)
 
-    def build_command_frame(self, mcu, motor0_cmds, motor1_cmds, counter=0):
+    def build_command_frame(self, mcu, motor0_cmds, motor1_cmds, counter=0, func=None, pad_canfd=None):
         """
         组装 Rx 指令帧 (不发送)，返回 bytes。
         motor0_cmds / motor1_cmds: [(mode:int, param_int16:int), ...] —— 已是线上定点整数。
         两个列表长度必须相等 (下位机按 命令数/2 拆分给电机0/电机1)。
+        func:      指令通道 Func 字节, 默认 RX_FUNC_CMD (=FDCAN)。
+        pad_canfd: 是否把整帧补零对齐到 CAN FD 合法长度; None 时在 func 为 FDCAN 通道时自动开启。
         """
         if len(motor0_cmds) != len(motor1_cmds):
             raise ValueError(f"电机0/电机1 指令数必须相等: {len(motor0_cmds)} vs {len(motor1_cmds)}")
+        if func is None:
+            func = self.RX_FUNC_CMD
+        if pad_canfd is None:
+            pad_canfd = (func == self.RX_FUNC_FDCAN_CMD)
         target_id = self.MCU_IDS[self._to_index(mcu)]
         all_cmds = list(motor0_cmds) + list(motor1_cmds)
         command_num = len(all_cmds)
@@ -515,12 +562,14 @@ class SerialManager:
         data.append(self.RX_FRAME_HEADER)
         data.append(target_id)
         data.append(counter & 0xFF)
-        data.append(self.RX_FUNC_CMD)
+        data.append(func & 0xFF)
         data.append(command_num & 0xFF)
         for mode, param in all_cmds:
             data.append(mode & 0xFF)
             data += struct.pack("<h", self._clamp_int16(param))
         data.append(self.RX_FRAME_TAIL)
+        if pad_canfd:
+            data = self._canfd_pad(data)
         return bytes(data)
 
     def send_command(self, mcu, motor0_cmds, motor1_cmds, counter=0):
@@ -659,10 +708,3 @@ class SerialManager:
 
     def send_clear_flash_error(self, mcu):
         return self._send_action(mcu, self.MODE_DEVICE_CLEAR_FLASH_ERROR)
-
-    # ---------- 向后兼容别名 ----------
-    def send_theta_command(self, target_index, theta1_rad, theta2_rad):
-        return self.send_position(target_index, theta1_rad, theta2_rad)
-
-    def send_speed_command(self, target_index, omega1, omega2):
-        return self.send_velocity(target_index, omega1, omega2)
