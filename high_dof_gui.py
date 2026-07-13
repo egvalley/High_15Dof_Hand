@@ -151,7 +151,13 @@ class HighDofHandGUI:
         self.target_combo = ttk.Combobox(top, values=target_values, width=16, state="readonly")
         self.target_combo.current(0)
         self.target_combo.pack(side="left")
-        ttk.Label(top, text="  (指令同时下发到该 MCU 的 电机0 与 电机1)", foreground="#777").pack(side="left")
+
+        ttk.Label(top, text="   目标电机:").pack(side="left", padx=(4, 4))
+        self.motor_combo = ttk.Combobox(top, values=["两个电机", "仅电机0", "仅电机1"], width=10, state="readonly")
+        self.motor_combo.current(0)
+        self.motor_combo.pack(side="left")
+        self.motor_combo.bind("<<ComboboxSelected>>", self._on_motor_change)
+        ttk.Label(top, text="  (选单个电机时, 只有对应那侧的输入框生效)", foreground="#777").pack(side="left")
 
         # 上: 可滚动指令区   下: 日志
         paned = ttk.Panedwindow(self.tab_control, orient="vertical")
@@ -174,6 +180,12 @@ class HighDofHandGUI:
         paned.add(logf, weight=1)
         self.log_text = tk.Text(logf, height=7, state="disabled", background="#101418", foreground="#c8e6c9")
         self.log_text.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # 每电机独立取值的输入框对 (电机0键, 电机1键)，用于按"目标电机"选择启用/禁用
+        self._motor_entry_pairs = [
+            ("pos0", "pos1"), ("vel0", "vel1"), ("tau0", "tau1"), ("iq0", "iq1"),
+            ("imp_o0", "imp_o1"), ("tj_p0", "tj_p1"), ("raw_p0", "raw_p1"),
+        ]
 
     def _build_state_section(self, parent):
         f = ttk.LabelFrame(parent, text="状态机派发 (DispatchMotorStateMachine)")
@@ -311,6 +323,17 @@ class HighDofHandGUI:
             return list(range(SerialManager.NUM_MCU))
         return [sel]
 
+    def _motor_sel(self):
+        """返回目标电机: 'both' / 0 / 1。"""
+        return ("both", 0, 1)[self.motor_combo.current()]
+
+    def _on_motor_change(self, event=None):
+        """按目标电机启用/禁用每电机独立输入框。"""
+        sel = self._motor_sel()
+        for k0, k1 in self._motor_entry_pairs:
+            self.entries[k0].config(state="normal" if sel in ("both", 0) else "disabled")
+            self.entries[k1].config(state="normal" if sel in ("both", 1) else "disabled")
+
     def _ensure_connected(self):
         if not (self.serial_mgr and self.serial_mgr.is_connected):
             messagebox.showwarning("警告", "串口未连接")
@@ -324,27 +347,42 @@ class HighDofHandGUI:
         return int(float(self.entries[key].get()))
 
     def _run(self, desc, func):
-        """对所有目标执行 func(idx) 并写日志。func 返回 bool。"""
+        """对所有目标 MCU 执行 func(idx) 并写日志。func 返回 bool。"""
         if not self._ensure_connected():
             return
+        mtag = {"both": "M0+M1", 0: "M0", 1: "M1"}[self._motor_sel()]
         for idx in self._targets():
             try:
                 ok = func(idx)
             except Exception as e:  # 输入解析等异常
-                self._log(f"[ERR] MCU{idx} {desc}: {e}")
+                self._log(f"[ERR] MCU{idx}/{mtag} {desc}: {e}")
                 continue
-            self._log(f"[{'OK ' if ok else 'ERR'}] MCU{idx} {desc}")
+            self._log(f"[{'OK ' if ok else 'ERR'}] MCU{idx}/{mtag} {desc}")
 
     # ---- 各类指令回调 ----
+    def _read_pair(self, k0, k1):
+        """按目标电机读取一对浮点输入框; 未选中的电机返回 None。可能抛 ValueError。"""
+        sel = self._motor_sel()
+        v0 = self._getf(k0) if sel in ("both", 0) else None
+        v1 = self._getf(k1) if sel in ("both", 1) else None
+        return v0, v1
+
+    def _read_pair_int(self, k0, k1):
+        sel = self._motor_sel()
+        v0 = self._geti(k0) if sel in ("both", 0) else None
+        v1 = self._geti(k1) if sel in ("both", 1) else None
+        return v0, v1
+
     def _do_state(self, state_key, label):
-        self._run(f"状态→{label}", lambda idx: self.serial_mgr.send_state(idx, state_key))
+        self._run(f"状态→{label}",
+                  lambda idx: self.serial_mgr.send_state(idx, state_key, motor=self._motor_sel()))
 
     def _do_simple(self, fn, label):
-        self._run(label, lambda idx: getattr(self.serial_mgr, fn)(idx))
+        self._run(label, lambda idx: getattr(self.serial_mgr, fn)(idx, motor=self._motor_sel()))
 
     def _do_paired(self, fn, keys, label):
         try:
-            v0, v1 = self._getf(keys[0]), self._getf(keys[1])
+            v0, v1 = self._read_pair(keys[0], keys[1])
         except ValueError:
             messagebox.showwarning("输入错误", f"{label}: 请输入有效数字")
             return
@@ -356,7 +394,8 @@ class HighDofHandGUI:
         except ValueError:
             messagebox.showwarning("输入错误", f"{label}: 请输入有效数字")
             return
-        self._run(f"{label} [kp={kp}, ki={ki}]", lambda idx: getattr(self.serial_mgr, fn)(idx, kp, ki))
+        self._run(f"{label} [kp={kp}, ki={ki}]",
+                  lambda idx: getattr(self.serial_mgr, fn)(idx, kp, ki, motor=self._motor_sel()))
 
     def _do_impedance(self):
         try:
@@ -365,11 +404,12 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", "阻抗参数: 请输入有效数字")
             return
         self._run(f"阻抗 [k={k}, b={b}, j={j}]",
-                  lambda idx: self.serial_mgr.send_impedance_params(idx, k, b, j))
+                  lambda idx: self.serial_mgr.send_impedance_params(idx, k, b, j, motor=self._motor_sel()))
 
     def _do_traj(self):
         try:
-            v, a, p0, p1 = self._getf("tj_v"), self._getf("tj_a"), self._getf("tj_p0"), self._getf("tj_p1")
+            v, a = self._getf("tj_v"), self._getf("tj_a")
+            p0, p1 = self._read_pair("tj_p0", "tj_p1")
         except ValueError:
             messagebox.showwarning("输入错误", "轨迹参数: 请输入有效数字")
             return
@@ -378,7 +418,7 @@ class HighDofHandGUI:
 
     def _do_traj_pos_only(self):
         try:
-            p0, p1 = self._getf("tj_p0"), self._getf("tj_p1")
+            p0, p1 = self._read_pair("tj_p0", "tj_p1")
         except ValueError:
             messagebox.showwarning("输入错误", "轨迹位置: 请输入有效数字")
             return
@@ -387,7 +427,8 @@ class HighDofHandGUI:
 
     def _do_raw(self):
         try:
-            mode, p0, p1 = self._geti("raw_mode"), self._geti("raw_p0"), self._geti("raw_p1")
+            mode = self._geti("raw_mode")
+            p0, p1 = self._read_pair_int("raw_p0", "raw_p1")
         except ValueError:
             messagebox.showwarning("输入错误", "原始指令: 请输入有效整数")
             return

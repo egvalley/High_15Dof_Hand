@@ -111,6 +111,10 @@ class SerialManager:
     MODE_APP_SYSIDEN                 = 104
     MODE_DEVICE_CLEAR_FLASH_ERROR    = 122
 
+    # 占位/空操作模式: router.c 的 RxPayloadHandler switch 无 default 分支, 未识别的 mode 直接被忽略。
+    # 用它填充"不想控制的那个电机"的命令槽, 从而只对单个电机下发有效指令 (下位机要求命令数为偶数、前后各半)。
+    MODE_NOP                         = 0
+
     # 模式 -> 可读名字 (用于日志)
     MODE_NAME = {
         MODE_FOC_UQ: "FOC_Uq", MODE_FOC_UD: "FOC_Ud",
@@ -573,138 +577,165 @@ class SerialManager:
         return bytes(data)
 
     def send_command(self, mcu, motor0_cmds, motor1_cmds, counter=0):
-        """组装并发送 Rx 指令帧。参数同 build_command_frame。"""
+        """
+        组装并发送 Rx 指令帧。
+        motor0_cmds / motor1_cmds 可以不等长(含一侧为空): 较短一侧会用 MODE_NOP 空操作补齐,
+        以满足下位机"命令数为偶数、前半给电机0、后半给电机1"的约束, 从而实现单电机寻址。
+        """
+        m0 = list(motor0_cmds or [])
+        m1 = list(motor1_cmds or [])
+        n = max(len(m0), len(m1))
+        if n == 0:
+            print("[发送失败] 指令列表为空")
+            return False
+        m0 += [(self.MODE_NOP, 0)] * (n - len(m0))
+        m1 += [(self.MODE_NOP, 0)] * (n - len(m1))
         try:
-            frame = self.build_command_frame(mcu, motor0_cmds, motor1_cmds, counter)
+            frame = self.build_command_frame(mcu, m0, m1, counter)
         except ValueError as e:
             print(f"[发送失败] {e}")
             return False
         return self._write_frame(frame)
 
     # ---------- 通用 ----------
-    def send_raw_command(self, mcu, mode, param_m0, param_m1=None):
+    def send_raw_command(self, mcu, mode, param0=None, param1=None):
         """
-        发送原始(未换算)指令: 直接给电机0/电机1 各下发一条 (mode, param) 指令。
-        param_m1 为 None 时对两电机使用相同 param。
+        发送原始(未换算)指令: 给电机0/电机1 各下发一条 (mode, param)。
+        param 为 None 表示跳过该电机(NOP 占位), 从而只控制单个电机。
         """
-        if param_m1 is None:
-            param_m1 = param_m0
-        return self.send_command(mcu, [(mode, param_m0)], [(mode, param_m1)])
+        m0 = [] if param0 is None else [(mode, int(param0))]
+        m1 = [] if param1 is None else [(mode, int(param1))]
+        return self.send_command(mcu, m0, m1)
 
-    def _send_paired(self, mcu, mode, value_m0, value_m1):
-        """同一模式, 按 MODE_SCALE 换算后给两电机各下发一条。"""
-        return self.send_command(
-            mcu,
-            [(mode, self._quantize(mode, value_m0))],
-            [(mode, self._quantize(mode, value_m1))],
-        )
+    def _cmds_for(self, mode, value):
+        """value 为 None -> 空(跳过该电机); 否则 -> 单条 (mode, 定点值)。"""
+        return [] if value is None else [(mode, self._quantize(mode, value))]
 
-    def _send_action(self, mcu, mode):
-        """无参数的动作类指令(对两电机同时生效, param=0)。"""
-        return self.send_command(mcu, [(mode, 0)], [(mode, 0)])
+    def _send_per_motor(self, mcu, mode, v0, v1):
+        """同一模式, 分别给电机0/电机1 下发; 传 None 的电机被跳过(NOP 占位)。"""
+        m0 = self._cmds_for(mode, v0)
+        m1 = self._cmds_for(mode, v1)
+        if not m0 and not m1:
+            print("[发送失败] 至少要为一个电机指定值")
+            return False
+        return self.send_command(mcu, m0, m1)
+
+    @staticmethod
+    def _motor_lists(cmds, motor):
+        """把一组命令按 motor 选择分配: 'both'->两电机都发; 0->只电机0; 1->只电机1。"""
+        if motor == "both":
+            return list(cmds), list(cmds)
+        if motor == 0:
+            return list(cmds), []
+        if motor == 1:
+            return [], list(cmds)
+        raise ValueError(f"motor 必须为 0 / 1 / 'both': {motor!r}")
+
+    def _send_action(self, mcu, mode, motor="both"):
+        """无参数的动作类指令(param=0)。motor 选择作用电机。"""
+        m0, m1 = self._motor_lists([(mode, 0)], motor)
+        return self.send_command(mcu, m0, m1)
 
     # ---------- 状态机派发 ----------
-    def send_state(self, mcu, state):
-        """派发状态机: state 可为 int 或 MOTOR_STATE 键名字符串。"""
+    def send_state(self, mcu, state, motor="both"):
+        """派发状态机: state 可为 int 或 MOTOR_STATE 键名字符串; motor 选择作用电机。"""
         if isinstance(state, str):
             if state not in self.MOTOR_STATE:
                 print(f"[发送失败] 未知状态名: {state}")
                 return False
             state = self.MOTOR_STATE[state]
-        return self.send_command(
-            mcu,
-            [(self.MODE_FOC_DISPATCH_STATE, int(state))],
-            [(self.MODE_FOC_DISPATCH_STATE, int(state))],
-        )
+        m0, m1 = self._motor_lists([(self.MODE_FOC_DISPATCH_STATE, int(state))], motor)
+        return self.send_command(mcu, m0, m1)
 
-    def send_elec_angle_calib(self, mcu):
-        return self.send_state(mcu, "StartupElecAngleDrag")
+    def send_elec_angle_calib(self, mcu, motor="both"):
+        return self.send_state(mcu, "StartupElecAngleDrag", motor)
 
     # ---------- 位置 / 速度 / 力矩 / 电流 ----------
-    def send_position(self, mcu, theta0_rad, theta1_rad):
-        return self._send_paired(mcu, self.MODE_FOC_THETA_GEAR, theta0_rad, theta1_rad)
+    # 每电机独立取值; 只想控一个电机时, 把另一个电机的值传 None 即可(自动 NOP 占位)。
+    def send_position(self, mcu, theta0_rad=None, theta1_rad=None):
+        return self._send_per_motor(mcu, self.MODE_FOC_THETA_GEAR, theta0_rad, theta1_rad)
 
-    def send_velocity(self, mcu, omega0, omega1):
-        return self._send_paired(mcu, self.MODE_FOC_OMEGA_GEAR, omega0, omega1)
+    def send_velocity(self, mcu, omega0=None, omega1=None):
+        return self._send_per_motor(mcu, self.MODE_FOC_OMEGA_GEAR, omega0, omega1)
 
-    def send_torque(self, mcu, tau0, tau1):
-        return self._send_paired(mcu, self.MODE_FOC_TORQUE_GEAR, tau0, tau1)
+    def send_torque(self, mcu, tau0=None, tau1=None):
+        return self._send_per_motor(mcu, self.MODE_FOC_TORQUE_GEAR, tau0, tau1)
 
-    def send_iq(self, mcu, iq0, iq1):
-        return self._send_paired(mcu, self.MODE_FOC_IQ, iq0, iq1)
+    def send_iq(self, mcu, iq0=None, iq1=None):
+        return self._send_per_motor(mcu, self.MODE_FOC_IQ, iq0, iq1)
 
-    def send_id(self, mcu, id0, id1):
-        return self._send_paired(mcu, self.MODE_FOC_ID, id0, id1)
+    def send_id(self, mcu, id0=None, id1=None):
+        return self._send_per_motor(mcu, self.MODE_FOC_ID, id0, id1)
 
     # ---------- 阻抗控制 ----------
-    def send_impedance_spring_origin(self, mcu, origin0, origin1):
-        return self._send_paired(mcu, self.MODE_FOC_IMPEDANCE_SPRING_ORIGIN, origin0, origin1)
+    def send_impedance_spring_origin(self, mcu, origin0=None, origin1=None):
+        return self._send_per_motor(mcu, self.MODE_FOC_IMPEDANCE_SPRING_ORIGIN, origin0, origin1)
 
-    def send_impedance_params(self, mcu, spring, damper, inertia):
-        """一次性设置 弹簧刚度/阻尼/惯量 (两电机相同)。"""
-        m = [
+    def send_impedance_params(self, mcu, spring, damper, inertia, motor="both"):
+        """一次性设置 弹簧刚度/阻尼/惯量; motor 选择作用电机。"""
+        cmds = [
             (self.MODE_FOC_IMPEDANCE_SPRING, self._quantize(self.MODE_FOC_IMPEDANCE_SPRING, spring)),
             (self.MODE_FOC_IMPEDANCE_DAMPER, self._quantize(self.MODE_FOC_IMPEDANCE_DAMPER, damper)),
             (self.MODE_FOC_IMPEDANCE_INERTIA, self._quantize(self.MODE_FOC_IMPEDANCE_INERTIA, inertia)),
         ]
-        return self.send_command(mcu, m, list(m))
-
-    # ---------- 轨迹规划 ----------
-    def send_trajectory(self, mcu, vel_max, acl_max, pos0, pos1):
-        """一帧内设定 速度上限/加速度上限/目标位置 (位置可分电机)。"""
-        m0 = [
-            (self.MODE_APP_TRAJ_VEL_MAX, self._quantize(self.MODE_APP_TRAJ_VEL_MAX, vel_max)),
-            (self.MODE_APP_TRAJ_ACL_MAX, self._quantize(self.MODE_APP_TRAJ_ACL_MAX, acl_max)),
-            (self.MODE_APP_TRAJ_POS_CMD, self._quantize(self.MODE_APP_TRAJ_POS_CMD, pos0)),
-        ]
-        m1 = [
-            (self.MODE_APP_TRAJ_VEL_MAX, self._quantize(self.MODE_APP_TRAJ_VEL_MAX, vel_max)),
-            (self.MODE_APP_TRAJ_ACL_MAX, self._quantize(self.MODE_APP_TRAJ_ACL_MAX, acl_max)),
-            (self.MODE_APP_TRAJ_POS_CMD, self._quantize(self.MODE_APP_TRAJ_POS_CMD, pos1)),
-        ]
+        m0, m1 = self._motor_lists(cmds, motor)
         return self.send_command(mcu, m0, m1)
 
-    def send_trajectory_pos(self, mcu, pos0, pos1):
+    # ---------- 轨迹规划 ----------
+    def send_trajectory(self, mcu, vel_max, acl_max, pos0=None, pos1=None):
+        """一帧内设定 速度上限/加速度上限/目标位置; 传 None 的电机被跳过(只控单电机)。"""
+        def triple(pos):
+            if pos is None:
+                return []
+            return [
+                (self.MODE_APP_TRAJ_VEL_MAX, self._quantize(self.MODE_APP_TRAJ_VEL_MAX, vel_max)),
+                (self.MODE_APP_TRAJ_ACL_MAX, self._quantize(self.MODE_APP_TRAJ_ACL_MAX, acl_max)),
+                (self.MODE_APP_TRAJ_POS_CMD, self._quantize(self.MODE_APP_TRAJ_POS_CMD, pos)),
+            ]
+        m0, m1 = triple(pos0), triple(pos1)
+        if not m0 and not m1:
+            print("[发送失败] 至少要为一个电机指定目标位置")
+            return False
+        return self.send_command(mcu, m0, m1)
+
+    def send_trajectory_pos(self, mcu, pos0=None, pos1=None):
         """只更新轨迹目标位置(不改速度/加速度上限)。"""
-        return self._send_paired(mcu, self.MODE_APP_TRAJ_POS_CMD, pos0, pos1)
+        return self._send_per_motor(mcu, self.MODE_APP_TRAJ_POS_CMD, pos0, pos1)
 
     # ---------- PID 增益 ----------
-    def send_pos_pid(self, mcu, kp, ki):
-        m = [
-            (self.MODE_FOC_POS_PID_KP, self._quantize(self.MODE_FOC_POS_PID_KP, kp)),
-            (self.MODE_FOC_POS_PID_KI, self._quantize(self.MODE_FOC_POS_PID_KI, ki)),
-        ]
-        return self.send_command(mcu, m, list(m))
+    def send_pos_pid(self, mcu, kp, ki, motor="both"):
+        cmds = [(self.MODE_FOC_POS_PID_KP, self._quantize(self.MODE_FOC_POS_PID_KP, kp)),
+                (self.MODE_FOC_POS_PID_KI, self._quantize(self.MODE_FOC_POS_PID_KI, ki))]
+        m0, m1 = self._motor_lists(cmds, motor)
+        return self.send_command(mcu, m0, m1)
 
-    def send_vel_pid(self, mcu, kp, ki):
-        m = [
-            (self.MODE_FOC_VEL_PID_KP, self._quantize(self.MODE_FOC_VEL_PID_KP, kp)),
-            (self.MODE_FOC_VEL_PID_KI, self._quantize(self.MODE_FOC_VEL_PID_KI, ki)),
-        ]
-        return self.send_command(mcu, m, list(m))
+    def send_vel_pid(self, mcu, kp, ki, motor="both"):
+        cmds = [(self.MODE_FOC_VEL_PID_KP, self._quantize(self.MODE_FOC_VEL_PID_KP, kp)),
+                (self.MODE_FOC_VEL_PID_KI, self._quantize(self.MODE_FOC_VEL_PID_KI, ki))]
+        m0, m1 = self._motor_lists(cmds, motor)
+        return self.send_command(mcu, m0, m1)
 
-    def send_cur_pid(self, mcu, kp, ki):
-        m = [
-            (self.MODE_FOC_CUR_PID_KP, self._quantize(self.MODE_FOC_CUR_PID_KP, kp)),
-            (self.MODE_FOC_CUR_PID_KI, self._quantize(self.MODE_FOC_CUR_PID_KI, ki)),
-        ]
-        return self.send_command(mcu, m, list(m))
+    def send_cur_pid(self, mcu, kp, ki, motor="both"):
+        cmds = [(self.MODE_FOC_CUR_PID_KP, self._quantize(self.MODE_FOC_CUR_PID_KP, kp)),
+                (self.MODE_FOC_CUR_PID_KI, self._quantize(self.MODE_FOC_CUR_PID_KI, ki))]
+        m0, m1 = self._motor_lists(cmds, motor)
+        return self.send_command(mcu, m0, m1)
 
     # ---------- App 动作类 ----------
-    def send_homing(self, mcu):
-        return self._send_action(mcu, self.MODE_APP_HOMING)
+    def send_homing(self, mcu, motor="both"):
+        return self._send_action(mcu, self.MODE_APP_HOMING, motor)
 
-    def send_flashing_params(self, mcu):
-        return self._send_action(mcu, self.MODE_APP_FLASHING_PARAMS)
+    def send_flashing_params(self, mcu, motor="both"):
+        return self._send_action(mcu, self.MODE_APP_FLASHING_PARAMS, motor)
 
-    def send_traj_init(self, mcu):
-        return self._send_action(mcu, self.MODE_APP_TRAJ_INIT)
+    def send_traj_init(self, mcu, motor="both"):
+        return self._send_action(mcu, self.MODE_APP_TRAJ_INIT, motor)
 
-    def send_traj_deinit(self, mcu):
-        return self._send_action(mcu, self.MODE_APP_TRAJ_DEINIT)
+    def send_traj_deinit(self, mcu, motor="both"):
+        return self._send_action(mcu, self.MODE_APP_TRAJ_DEINIT, motor)
 
-    def send_sysiden(self, mcu):
-        return self._send_action(mcu, self.MODE_APP_SYSIDEN)
+    def send_sysiden(self, mcu, motor="both"):
+        return self._send_action(mcu, self.MODE_APP_SYSIDEN, motor)
 
-    def send_clear_flash_error(self, mcu):
-        return self._send_action(mcu, self.MODE_DEVICE_CLEAR_FLASH_ERROR)
+    def send_clear_flash_error(self, mcu, motor="both"):
+        return self._send_action(mcu, self.MODE_DEVICE_CLEAR_FLASH_ERROR, motor)
