@@ -19,7 +19,7 @@ class SerialManager:
     TX_MAX_FRAME    = 1024
 
     INNER_FREQ = 10000.0
-    OUTER_FREQ = 1000.0
+    OUTER_FREQ = 200.0
 
     # ==================== MCU 列表 ====================
     NUM_MCU     = 8
@@ -56,7 +56,7 @@ class SerialManager:
         self.timeout = timeout
 
         self.ser = None
-        self.is_connected = False
+        self.connecting_state = False
         self._stop_event = threading.Event()
         self._read_thread = None
 
@@ -64,7 +64,6 @@ class SerialManager:
         self.mcu_frames = [None] * self.NUM_MCU
         self.mcu_stats = [self._new_stats() for _ in range(self.NUM_MCU)]
         self.last_loss_calc_time = time.time()
-        self._unknown_ids = set()
 
     @staticmethod
     def _new_stats():
@@ -88,7 +87,7 @@ class SerialManager:
                 stopbits=serial.STOPBITS_ONE,
                 timeout=self.timeout,
             )
-            self.is_connected = True
+            self.connecting_state = True
             self.serial_buffer.clear()
             self.reset_stats()
 
@@ -100,11 +99,11 @@ class SerialManager:
             return True
         except serial.SerialException as e:
             print(f"[连接失败] 无法打开串口 {self.port}: {e}")
-            self.is_connected = False
+            self.connecting_state = False
             return False
 
     def disconnect(self):
-        self.is_connected = False
+        self.connecting_state = False
         self._stop_event.set()
         if self._read_thread and self._read_thread.is_alive():
             self._read_thread.join(timeout=1.0)
@@ -222,9 +221,7 @@ class SerialManager:
         mcu_id = frame[1]
         idx = mcu_id - self.MCU_BASE_ID
         if idx < 0 or idx >= self.NUM_MCU:
-            if mcu_id not in self._unknown_ids:
-                self._unknown_ids.add(mcu_id)
-                print(f"[警告] 未识别的 MCU ID: 0x{mcu_id:02X} (支持 0xB0~0xB7)")
+            print(f"[警告] 未识别的 MCU ID: 0x{mcu_id:02X} (支持 0xB0~0xB7)")
             return
 
         frame_counter = frame[4 + n]
