@@ -25,13 +25,12 @@ from sdk.models import LinkStats
 
 class SerialManager:
 
-    # 兼容旧调用方：暴露拓扑常量 (真正定义在 McuConfig)
-    NUM_MCU = McuConfig.COUNT
-    MCU_IDS = McuConfig.IDS
-    MCU_BASE_ID = McuConfig.BASE_ID
-    MOTORS_PER_MCU = McuConfig.MOTORS_PER_MCU
-
     def __init__(self, port, baudrate=115200, timeout=0.1):
+        """
+        构造 (不打开串口)。真正打开在 connect()。
+        参数: port 端口名 (如 'COM3')；baudrate 波特率；timeout 读超时秒。
+        用法: mgr = SerialManager('COM3', 115200); mgr.connect()。
+        """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -53,6 +52,7 @@ class SerialManager:
 
     # ============================================================ 连接管理
     def connect(self):
+        """打开串口、复位解码器与统计、启动后台接收线程。成功返回 True，失败打印原因返回 False。"""
         try:
             self.ser = serial.Serial(
                 port=self.port,
@@ -78,6 +78,7 @@ class SerialManager:
             return False
 
     def disconnect(self):
+        """停接收线程并关闭串口。可被接收线程内部异常触发，故做了防自 join 处理。"""
         self.is_connected = False
         self._stop_event.set()
 
@@ -93,12 +94,14 @@ class SerialManager:
             print(f"[断开连接] 串口 {self.port} 已关闭。")
 
     def reset_stats(self):
+        """清空所有 MCU 的最新帧与链路统计 (加锁)。connect() 时调用，也可手动清零。"""
         with self._data_lock:
             self._frames = [None] * McuConfig.COUNT
             self._stats = [LinkStats() for _ in range(McuConfig.COUNT)]
 
     # ============================================================ 接收线程
     def _read_loop(self):
+        """后台线程主体：循环读串口字节 -> 喂解码器 -> 存帧；串口异常时自动断开退出。"""
         while not self._stop_event.is_set():
             if not (self.ser and self.ser.is_open):
                 time.sleep(0.1)
@@ -124,6 +127,7 @@ class SerialManager:
                 print(f"\n[解析异常]: {e}")
 
     def _tick_loss_rate(self):
+        """每秒结算一次各 MCU 的丢包率：把本秒 收/丢 计数归档到 last_sec_* 并清零重计。"""
         now = time.time()
         if now - self._last_loss_calc_time < 1.0:
             return
@@ -138,12 +142,17 @@ class SerialManager:
         self._last_loss_calc_time = now
 
     def _store_feedback(self, feedback):
+        """保存某 MCU 的最新帧并更新其链路统计 (加锁，接收线程调用)。"""
         with self._data_lock:
             idx = feedback.mcu_index
             self._frames[idx] = feedback
             self._update_stats_locked(idx, feedback.frame_counter)
 
     def _update_stats_locked(self, idx, frame_counter):
+        """
+        更新收包/丢包计数：比对本帧计数器与期望值，缺口即丢包数 (按 0~255 回绕)。
+        调用方须已持有 _data_lock。
+        """
         st = self._stats[idx]
         st.received += 1
         if st.ever_received:
@@ -166,15 +175,6 @@ class SerialManager:
             stats = copy.deepcopy(self._stats[idx])
         return frame, stats
 
-    # ---- 兼容旧接口 (GUI 迁移期用) ----
-    def get_latest_frame(self, mcu):
-        frame, _ = self.get_snapshot(mcu)
-        return frame
-
-    def get_mcu_stats(self, mcu):
-        _, stats = self.get_snapshot(mcu)
-        return stats
-
     # ============================================================ 发送
     def write_data(self, data):
         """
@@ -184,6 +184,7 @@ class SerialManager:
         if not self.is_connected or not self.ser or not self.ser.is_open:
             print("[发送失败] 串口未连接或已关闭")
             return False
+        print(f"[发送HEX] {len(data)}字节: {bytes(data).hex(' ').upper()}")
         try:
             with self._write_lock:
                 written = self.ser.write(data)

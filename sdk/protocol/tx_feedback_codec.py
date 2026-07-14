@@ -20,7 +20,7 @@ Tx 反馈帧解码器：MCU -> 上位机。
 
 import struct
 
-from sdk.protocol.constants import TxFrame, McuConfig, state_name
+from sdk.protocol.constants import TxFrame, McuConfig, MotorState
 from sdk.models import McuFeedback, MotorFeedback
 
 
@@ -28,10 +28,11 @@ class TxFeedbackCodec:
     """有状态的字节流 -> 帧 解码器 (内部维护拼帧缓冲区)。"""
 
     def __init__(self):
+        """新建解码器，内部拼帧缓冲区置空。每条串口链路持有一个实例。"""
         self._buffer = bytearray()
-        self._unknown_ids = set()
 
     def reset(self):
+        """清空拼帧缓冲区。重新连接串口时调用，避免旧的半截字节污染新数据。"""
         self._buffer.clear()
 
     # ---------------------------------------------------------------- 纯函数
@@ -70,6 +71,11 @@ class TxFeedbackCodec:
 
     # ---------------------------------------------------------------- 内部
     def _drain(self):
+        """
+        从缓冲区尽可能多地切出完整帧：定位帧头 -> 读长度字段 -> 校验帧尾/CRC -> 解码。
+        数据不足则保留等待下次；帧头错位或校验失败时丢 1 字节继续找下一个帧头。
+        返回本轮解出的 list[McuFeedback]。
+        """
         buf = self._buffer
         out = []
 
@@ -129,13 +135,16 @@ class TxFeedbackCodec:
         return out
 
     def _decode_frame(self, frame, n, sample_count, func):
+        """
+        把一个已通过 CRC 的完整帧解成 McuFeedback。
+        只取最后一行采样 (同帧各行一致)，反量化后按 2 电机 × 5 字段拆开。
+        MCU ID 无法识别时打印告警并返回 None。
+        """
         mcu_id = frame[1]
         try:
             idx = McuConfig.to_index(mcu_id)
         except ValueError:
-            if mcu_id not in self._unknown_ids:
-                self._unknown_ids.add(mcu_id)
-                print(f"[警告] 未识别的 MCU ID: 0x{mcu_id:02X} (支持 0xB0~0xB7)")
+            print(f"[警告] 未识别的 MCU ID: 0x{mcu_id:02X} (支持 0xB0~0xB7)")
             return None
 
         frame_counter = frame[4 + n]
@@ -188,7 +197,7 @@ class TxFeedbackCodec:
             code = int(round(state_val)) if state_val is not None else None
             motors.append(MotorFeedback(
                 state_code=code,
-                state_name=state_name(code) or "—",
+                state_name=MotorState.name(code) or "—",
                 theta=vals.get("theta"),
                 omega=vals.get("omega"),
                 acl=vals.get("acl"),

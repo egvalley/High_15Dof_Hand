@@ -18,13 +18,16 @@ class MotorTarget(Enum):
     BOTH = "both"
 
     def hits_motor0(self):
+        """本目标是否作用于电机0 (MOTOR_0 或 BOTH 时为 True)。用于决定电机0的命令/输入框是否生效。"""
         return self in (MotorTarget.MOTOR_0, MotorTarget.BOTH)
 
     def hits_motor1(self):
+        """本目标是否作用于电机1 (MOTOR_1 或 BOTH 时为 True)。"""
         return self in (MotorTarget.MOTOR_1, MotorTarget.BOTH)
 
     @property
     def tag(self):
+        """给日志用的简短标签：'M0' / 'M1' / 'M0+M1'。"""
         return {MotorTarget.MOTOR_0: "M0",
                 MotorTarget.MOTOR_1: "M1",
                 MotorTarget.BOTH: "M0+M1"}[self]

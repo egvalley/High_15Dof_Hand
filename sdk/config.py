@@ -42,6 +42,11 @@ class AppConfig:
     log_max_lines: int = 400
 
     def resolved_pad_canfd(self):
+        """
+        解析最终是否补齐 CAN-FD 长度：显式设了 pad_canfd 就用它，
+        否则按 command_func 是否为 FDCAN 自动判定。
+        用法: SerialCommander(..., pad_canfd=cfg.resolved_pad_canfd())。
+        """
         if self.pad_canfd is not None:
             return self.pad_canfd
         return self.command_func == CommFunc.RX_FDCAN_COMMAND

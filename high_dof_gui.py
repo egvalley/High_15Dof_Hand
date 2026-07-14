@@ -27,6 +27,7 @@ class ScrollableFrame(ttk.Frame):
     """带竖向滚动条的容器，内部控件放到 self.body。"""
 
     def __init__(self, parent, **kw):
+        """构建可竖向滚动的容器；调用方把子控件放进 self.body。绑定滚轮/尺寸自适应。"""
         super().__init__(parent, **kw)
         self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -46,6 +47,7 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
 
     def _on_wheel(self, event):
+        """鼠标滚轮事件回调：按滚动量滚动画布 (仅光标在容器内时绑定)。"""
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
 
@@ -64,6 +66,11 @@ class HighDofHandGUI:
     ]
 
     def __init__(self, root, config=None):
+        """
+        初始化主窗口并挂上定时刷新。
+        参数: root=Tk 根窗口；config=AppConfig (缺省则用默认配置)。
+        用法: HighDofHandGUI(tk.Tk(), config=AppConfig()) 后调用 root.mainloop()。
+        """
         self.root = root
         self.config = config or AppConfig()
         self.root.title("高自由度机械手 · MCU 监控与控制台")
@@ -80,6 +87,7 @@ class HighDofHandGUI:
 
     # ============================================================ UI 构建
     def _setup_ui(self):
+        """搭建整体界面：顶部串口设置栏 + "实时监控 / 指令控制"两个标签页。"""
         bar = ttk.LabelFrame(self.root, text="串口设置")
         bar.pack(fill="x", padx=10, pady=6)
 
@@ -111,6 +119,7 @@ class HighDofHandGUI:
 
     # ---------------------------------------------------------- 监控页
     def _build_monitor_tab(self):
+        """构建实时监控页：一棵 Treeview，MCU 为父节点、电机为子节点，预建所有行待刷新。"""
         info = ttk.Label(
             self.tab_monitor,
             text="8 个 MCU (0xB0~0xB7)，每个 MCU 管控 2 个电机，"
@@ -160,6 +169,7 @@ class HighDofHandGUI:
 
     # ---------------------------------------------------------- 控制页
     def _build_control_tab(self):
+        """构建指令控制页：顶部目标 MCU/电机选择，中部各控制分区，底部发送日志。"""
         top = ttk.Frame(self.tab_control)
         top.pack(fill="x", padx=6, pady=6)
         ttk.Label(top, text="目标 MCU:").pack(side="left", padx=(4, 4))
@@ -206,6 +216,7 @@ class HighDofHandGUI:
         ]
 
     def _build_state_section(self, parent):
+        """状态机派发分区：按 STATE_BUTTONS 表铺一排按钮，点击调用 _do_state。"""
         f = ttk.LabelFrame(parent, text="状态机派发 (DispatchMotorStateMachine)")
         f.pack(fill="x", padx=6, pady=5)
         for k, (label, state_key) in enumerate(self.STATE_BUTTONS):
@@ -216,6 +227,7 @@ class HighDofHandGUI:
             f.columnconfigure(c, weight=1)
 
     def _build_action_section(self, parent):
+        """App 动作分区：(按钮文案, commander 方法名) 表驱动，点击调用 _do_action。"""
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
         actions = [
@@ -234,6 +246,10 @@ class HighDofHandGUI:
             f.columnconfigure(c, weight=1)
 
     def _labeled_entries(self, parent, specs):
+        """
+        在一行里批量铺"标签 + 输入框"，并把输入框登记进 self.entries[key]。
+        specs: [(key, 标签文案, 默认值), ...]。供各控制分区复用。
+        """
         for i, (key, label, default) in enumerate(specs):
             ttk.Label(parent, text=label).grid(row=0, column=i * 2, padx=(6, 2), pady=4, sticky="e")
             e = ttk.Entry(parent, width=9)
@@ -242,6 +258,7 @@ class HighDofHandGUI:
             self.entries[key] = e
 
     def _build_value_sections(self, parent):
+        """位置/速度/力矩/电流四个"逐电机双值 + 发送"分区，表驱动生成，发送走 _do_pair。"""
         specs = [
             ("位置指令 (Theta_Gear, rad)",
              [("pos0", "电机0", "0.0"), ("pos1", "电机1", "0.0")], "send_position", "位置"),
@@ -264,6 +281,7 @@ class HighDofHandGUI:
                        ).pack(side="left", padx=8)
 
     def _build_impedance_section(self, parent):
+        """阻抗分区：一行发弹簧原点 (逐电机, _do_pair)，一行发刚度/阻尼/惯量 (_do_impedance)。"""
         f = ttk.LabelFrame(parent, text="阻抗控制")
         f.pack(fill="x", padx=6, pady=5)
 
@@ -282,6 +300,7 @@ class HighDofHandGUI:
                    command=self._do_impedance).grid(row=0, column=6, padx=8)
 
     def _build_traj_section(self, parent):
+        """轨迹分区：vmax/amax/双电机位置输入 + "发送轨迹"(_do_traj) / "仅更新位置"(_do_traj_pos_only)。"""
         f = ttk.LabelFrame(parent, text="轨迹规划 (一帧内设定 速度上限/加速度上限/目标位置)")
         f.pack(fill="x", padx=6, pady=5)
         r = ttk.Frame(f); r.pack(side="left")
@@ -294,6 +313,7 @@ class HighDofHandGUI:
                    command=self._do_traj_pos_only).pack(side="left", padx=2)
 
     def _build_pid_section(self, parent):
+        """PID 分区：位置/速度/电流环各一行 (Kp/Ki + 发送)，表驱动，发送走 _do_pid。"""
         f = ttk.LabelFrame(parent, text="PID 增益整定")
         f.pack(fill="x", padx=6, pady=5)
         rows = [
@@ -312,6 +332,7 @@ class HighDofHandGUI:
                        ).grid(row=k, column=2, padx=8)
 
     def _build_raw_section(self, parent):
+        """原始指令分区：mode + 双电机定点参数输入 + 发送 (_do_raw)，用于调试未包装的功能码。"""
         f = ttk.LabelFrame(parent, text="通用原始指令 (mode + 定点参数, 直接下发不做换算)")
         f.pack(fill="x", padx=6, pady=5)
         r = ttk.Frame(f); r.pack(side="left")
@@ -322,6 +343,7 @@ class HighDofHandGUI:
 
     # ============================================================ 连接
     def _toggle_serial(self):
+        """"连接/断开"按钮回调：已连则断开并复位界面；未连则读端口/波特率、建三层对象并连接。"""
         if self.manager and self.manager.is_connected:
             self.manager.disconnect()
             self._ui_connected = False
@@ -354,22 +376,26 @@ class HighDofHandGUI:
 
     # ============================================================ 目标解析
     def _targets(self):
+        """把"目标 MCU"下拉框解析成 index 列表：选"全部广播"返回 0~COUNT-1，否则返回单个。"""
         sel = self.target_combo.current()
         if sel == McuConfig.COUNT:  # 全部广播
             return list(range(McuConfig.COUNT))
         return [sel]
 
     def _motor_target(self):
+        """把"目标电机"下拉框解析成 MotorTarget (两个电机/仅电机0/仅电机1)。"""
         return (MotorTarget.BOTH, MotorTarget.MOTOR_0,
                 MotorTarget.MOTOR_1)[self.motor_combo.current()]
 
     def _on_motor_change(self, event=None):
+        """目标电机切换回调：按新目标启用/禁用每对逐电机输入框 (未选中侧灰掉)。"""
         t = self._motor_target()
         for k0, k1 in self._motor_entry_pairs:
             self.entries[k0].config(state="normal" if t.hits_motor0() else "disabled")
             self.entries[k1].config(state="normal" if t.hits_motor1() else "disabled")
 
     def _ensure_connected(self):
+        """每个发送回调开头调用：未连接则弹警告返回 False，阻止后续下发。"""
         if not (self.controller and self.manager and self.manager.is_connected):
             messagebox.showwarning("警告", "串口未连接")
             return False
@@ -377,9 +403,11 @@ class HighDofHandGUI:
 
     # ---- 输入读取 ----
     def _getf(self, key):
+        """读取 entries[key] 并转 float (非法输入抛 ValueError，由回调统一捕获提示)。"""
         return float(self.entries[key].get())
 
     def _geti(self, key):
+        """读取 entries[key] 并转 int (先 float 再取整，兼容 "6.0" 之类写法)。"""
         return int(float(self.entries[key].get()))
 
     def _read_pair(self, k0, k1):
@@ -390,25 +418,30 @@ class HighDofHandGUI:
         return v0, v1
 
     def _read_pair_int(self, k0, k1):
+        """同 _read_pair，但读成 int (用于 RAW 定点参数)。未选中侧返回 None。"""
         t = self._motor_target()
         v0 = self._geti(k0) if t.hits_motor0() else None
         v1 = self._geti(k1) if t.hits_motor1() else None
         return v0, v1
 
     # ============================================================ 指令回调
+    # 各 _do_* 为按钮回调，套路一致：确认已连接 -> (读输入) -> 调 controller -> _show_results。
     def _do_state(self, state_key, label):
+        """状态机按钮回调：向目标 MCU/电机派发状态 state_key，label 仅用于日志。"""
         if not self._ensure_connected():
             return
         results = self.controller.send_state(self._targets(), state_key, self._motor_target())
         self._show_results(f"状态→{label}", results)
 
     def _do_action(self, method_name, label):
+        """App 动作按钮回调：以 method_name 分派 commander 的无参数动作。"""
         if not self._ensure_connected():
             return
         results = self.controller.send_action(self._targets(), method_name, self._motor_target())
         self._show_results(label, results)
 
     def _do_pair(self, ctrl_method, keys, short):
+        """逐电机双值发送回调：按目标电机读 keys 两个浮点，调 controller.<ctrl_method>。"""
         if not self._ensure_connected():
             return
         try:
@@ -420,6 +453,7 @@ class HighDofHandGUI:
         self._show_results(f"{short} [{v0}, {v1}]", results)
 
     def _do_pid(self, ctrl_method, keys, label):
+        """PID 发送回调：读 keys 的 kp/ki，调 controller.<ctrl_method>。"""
         if not self._ensure_connected():
             return
         try:
@@ -432,6 +466,7 @@ class HighDofHandGUI:
         self._show_results(f"{label} [kp={kp}, ki={ki}]", results)
 
     def _do_impedance(self):
+        """阻抗参数发送回调：读刚度/阻尼/惯量并下发到目标电机。"""
         if not self._ensure_connected():
             return
         try:
@@ -444,6 +479,7 @@ class HighDofHandGUI:
         self._show_results(f"阻抗 [k={k}, b={b}, j={j}]", results)
 
     def _do_traj(self):
+        """轨迹发送回调：读 vmax/amax 与逐电机目标位置，下发完整轨迹指令。"""
         if not self._ensure_connected():
             return
         try:
@@ -456,6 +492,7 @@ class HighDofHandGUI:
         self._show_results(f"轨迹 [v={v}, a={a}, p=({p0},{p1})]", results)
 
     def _do_traj_pos_only(self):
+        """"仅更新位置"回调：只发轨迹目标位置，沿用上一帧 vmax/amax。"""
         if not self._ensure_connected():
             return
         try:
@@ -467,6 +504,7 @@ class HighDofHandGUI:
         self._show_results(f"轨迹位置 [{p0}, {p1}]", results)
 
     def _do_raw(self):
+        """原始指令回调：读 mode 与逐电机定点参数 (int)，不做换算直接下发。"""
         if not self._ensure_connected():
             return
         try:
@@ -480,6 +518,7 @@ class HighDofHandGUI:
 
     # ============================================================ 日志
     def _show_results(self, desc, results):
+        """把 controller 返回的 list[CommandResult] 逐条按 [OK/ERR] MCUx/电机 desc 写入日志。"""
         mtag = self._motor_target().tag
         for r in results:
             if r.message:
@@ -488,6 +527,7 @@ class HighDofHandGUI:
                 self._log(f"[{'OK ' if r.ok else 'ERR'}] MCU{r.mcu_index}/{mtag} {desc}")
 
     def _log(self, msg):
+        """向日志框追加一行并滚到底；超过 log_max_lines 时截掉最旧的若干行。"""
         self.log_text.config(state="normal")
         self.log_text.insert(tk.END, msg + "\n")
         self.log_text.see(tk.END)
@@ -498,9 +538,11 @@ class HighDofHandGUI:
     # ============================================================ 刷新
     @staticmethod
     def _fmt(v):
+        """把浮点反馈格式化成 3 位小数字符串；None 显示为破折号。"""
         return f"{v:.3f}" if v is not None else "—"
 
     def _reset_tree_nodata(self):
+        """把监控树所有行复位成"无数据"占位 (断开或清屏时用)。"""
         for i in range(McuConfig.COUNT):
             self.tree.item(f"mcu{i}", values=("", "", "", "", "", "无数据"),
                            tags=("mcu", "nodata"))
@@ -509,6 +551,11 @@ class HighDofHandGUI:
                                tags=("nodata",))
 
     def _update_loop(self):
+        """
+        定时刷新回调 (每 config.refresh_ms 由 root.after 触发一次)：
+        取每个 MCU 的一致快照刷新监控树与丢包着色；若接收线程已异常断开则同步界面。
+        末尾重新排下一次 after，形成循环。
+        """
         mgr = self.manager
         if mgr and mgr.is_connected:
             self._ui_connected = True

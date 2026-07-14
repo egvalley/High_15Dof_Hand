@@ -1,17 +1,18 @@
 """
 协议常量唯一定义源 (Single Source of Truth)。
 
-★ 本版已对照 router.h (枚举) + router.c (handler 换算) 校正。
-  旧版基于臆测的 FOC/PID/轨迹 mode 号与缩放系数全部作废，改用固件真值。
+★ 本版对照 router.h (RouterControlMode / RouterMCUObject 枚举) + router.c
+  (DeviceRouter_RxPayloadHandler 的换算) 校正。
 
-固件对电机的区分方式已确认：
-  靠 Control_Mode 里的 M0/M1/... 后缀区分，而【不是】靠命令前/后半段位置。
-  (router.c 的两段循环体完全相同，其并集恰好覆盖 [0, command_num)，
-   因此 command_num 奇偶都能被正确派发。)
+电机区分方式 (见 router.c 的两段 for 循环)：一帧的命令列表按【前/后半段位置】分给两个电机——
+    前半段 i <  command_num/2  -> 电机0 (固件 M1)
+    后半段 i >= command_num/2  -> 电机1 (固件 M2)
+  两段 switch 完全相同、共用【同一套 mode 值】；因此 mode 只表示"功能"，与电机无关。
+  ⇒ 编码时两半必须等长 (短的一侧用 NOP_MODE 补齐)，否则切分点错位、电机路由出错。
 
-本固件 handler 实际实现的功能集 (见 MotorFunc)：
-  位置 / 速度 / 力矩(实为电流环) / 阻抗弹簧 / 阻抗阻尼 / 阻抗惯量 / 换ID / 状态派发
-其余 (Iq、各环PID、轨迹、回零、刷参、系统辨识、清Flash、弹簧原点) 该固件未实现。
+Control_Mode 取值 = router.h RouterControlMode 枚举 (见 MotorFunc)，固件已实现：
+  位置 / 速度 / 力矩 · Iq / Id · 阻抗(弹簧/阻尼/惯量/原点) · 各环 PID ·
+  状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零 · 刷参 · 系统辨识 · 清Flash。
 """
 
 from enum import IntEnum
@@ -21,26 +22,29 @@ from enum import IntEnum
 class TxFrame:
     """MCU -> 上位机 反馈帧 (对应 router.c TX_* 常量)。"""
 
-    HEADER = 0x5A
-    TAIL = 0x0D
+    # 帧结构
+    HEADER            = 0x5A
+    TAIL              = 0x0D
     FIXED_HEADER_SIZE = 10
-    TAIL_SIZE = 3
-    MAX_CURVE_COUNT = 64
-    MAX_FRAME_SIZE = 1024   # = router.h ROUTER_MAX_TX_FRAME_SIZE
+    TAIL_SIZE         = 3
+    MAX_CURVE_COUNT   = 64
+    MAX_FRAME_SIZE    = 1024      # = router.h ROUTER_MAX_TX_FRAME_SIZE
 
-    INNER_FREQ = 10000.0
-    OUTER_FREQ = 1000.0
+    # timestamp 换算成秒时的基准频率 (按 func 选内环/外环)
+    INNER_FREQ        = 10000.0
+    OUTER_FREQ        = 200.0
 
 
 # ==================================================================== Rx 命令帧
 class RxFrame:
     """上位机 -> MCU 命令帧 (对应 router.c RX_* 常量)。"""
 
-    HEADER = 0x3B
-    TAIL = 0x1E
+    # 帧结构
+    HEADER            = 0x3B
+    TAIL              = 0x1E
     FIXED_HEADER_SIZE = 5
-    TAIL_SIZE = 1
-    MAX_COMMANDS = 20        # router.c: command_num > 20 直接丢弃
+    TAIL_SIZE         = 1
+    MAX_COMMANDS      = 20        # router.c: command_num > 20 直接丢弃
 
     CANFD_VALID_SIZES = (8, 12, 16, 20, 24, 32, 48, 64)
 
@@ -49,13 +53,15 @@ class RxFrame:
 class CommFunc(IntEnum):
     """router.h RouterTxCommFunc / RouterRxCommFunc。"""
 
-    TX_NORMAL = 0            # Router_Comm_USB_USART_Tx_Normal
-    TX_HIGH = 1             # Router_Comm_USB_USART_Tx_High
-    FDCAN_TX_NORMAL = 2     # Router_Comm_FDCAN_Tx_Normal
+    # 发送 (MCU -> 上位机)
+    TX_NORMAL            = 0     # Router_Comm_USB_USART_Tx_Normal
+    TX_HIGH              = 1     # Router_Comm_USB_USART_Tx_High
+    FDCAN_TX_NORMAL      = 2     # Router_Comm_FDCAN_Tx_Normal
 
-    RX_USB_USART_COMMAND = 3  # Router_Comm_USB_USART_Cmd
-    RX_FDCAN_COMMAND = 4      # Router_Comm_FDCAN_Cmd
-    RX_FDCAN_OTA = 5          # Router_Comm_FDCAN_OTA
+    # 接收 (上位机 -> MCU)
+    RX_USB_USART_COMMAND = 3     # Router_Comm_USB_USART_Cmd
+    RX_FDCAN_COMMAND     = 4     # Router_Comm_FDCAN_Cmd
+    RX_FDCAN_OTA         = 5     # Router_Comm_FDCAN_OTA
 
 
 # ==================================================================== MCU 拓扑
@@ -81,6 +87,11 @@ class McuConfig:
 
     @classmethod
     def to_index(cls, mcu):
+        """
+        把 MCU 标识归一化成 0~COUNT-1 的 index。
+        入参既可是 index (0~7) 也可是硬件 ID (0xB0~0xB7)；非法值抛 ValueError。
+        全项目凡"既接受 index 又接受 ID"的地方都走这里。
+        """
         if 0 <= mcu < cls.COUNT:
             return mcu
         if cls.BASE_ID <= mcu < cls.BASE_ID + cls.COUNT:
@@ -89,106 +100,100 @@ class McuConfig:
 
     @classmethod
     def id_of(cls, mcu):
+        """由 index 或 ID 得到硬件 ID (0xB0~0xB7)，供组帧时写入目标 ID 字段。"""
         return cls.IDS[cls.to_index(mcu)]
 
 
 # ==================================================================== 控制功能
 class MotorFunc(IntEnum):
     """
-    逻辑控制功能 (与具体电机无关)。
-    真正下发的 mode 号由 mode_for(func, motor) 结合电机号查表得到。
+    Control_Mode 功能码 —— 逐值对应 router.h 的 RouterControlMode。
+
+    两个电机共用同一套功能码，电机由命令的前/后半段位置区分 (见模块顶部说明)，
+    所以 mode 与电机无关。每个成员携带 (功能码, scale)：
+      scale = 把浮点物理量转成下发 int16 的乘数，即 param = round(物理量 × scale)。
+      物理量一律取【输出轴】单位——齿轮比 GEAR 在固件换算里恰好抵消，见各行注释。
     """
 
-    POSITION = 0
-    VELOCITY = 1
-    TORQUE = 2                 # 注意：固件里实际调用电流环 ServiceCurrentCmd
-    IMPEDANCE_SPRING = 3
-    IMPEDANCE_DAMPER = 4
-    IMPEDANCE_INERTIA = 5
-    SWITCH_ID = 6
-    MODE_SELECT = 7            # 状态机派发 (ServiceStateCmd)
+    def __new__(cls, code, scale):
+        """让每个成员既是它的功能码 int(func)，又携带量化乘数 .scale (见类文档)。"""
+        obj = int.__new__(cls, code)
+        obj._value_ = code
+        obj.scale = scale
+        return obj
+
+    #                          code    scale    # router.c handler (param -> 物理量)
+    # —— 基本控制 (输出轴单位) ——
+    THETA_GEAR              = (   6,  100.0)   # 位置 θ_m = param·GEAR/100  ⇒ θ_out=param/100
+    OMEGA_GEAR              = (   7,  100.0)   # 速度 ω_m = param·GEAR/100  ⇒ ω_out=param/100
+    TORQUE_GEAR             = (   8,  100.0)   # 力矩 τ_m = param/GEAR/100  ⇒ τ_out=param/100
+    IQ                      = (   9, 1000.0)   # q 轴电流 iq = param·0.001
+    ID                      = (  10, 1000.0)   # d 轴电流 id = param·0.001
+    # —— 阻抗 ——
+    IMPEDANCE_SPRING        = (  32,   10.0)   # k = param/10
+    IMPEDANCE_DAMPER        = (  33,  100.0)   # d = param/100
+    IMPEDANCE_INERTIA       = (  34, 1000.0)   # j = param/1000
+    IMPEDANCE_SPRING_ORIGIN = (  35,  100.0)   # 原点 θ_m = param·GEAR/100 ⇒ 输出轴 param/100
+    # —— 各环 PID ——
+    CUR_PID_KP              = (  52, 1000.0)   # param·0.001
+    CUR_PID_KI              = (  53, 1000.0)
+    VEL_PID_KP              = (  54, 1000.0)
+    VEL_PID_KI              = (  55, 1000.0)
+    POS_PID_KP              = (  56,    1.0)   # param (无缩放)
+    POS_PID_KI              = (  57,    1.0)
+    # —— 状态机 ——
+    DISPATCH_STATE          = (  72,    1.0)   # 状态机派发；param = 状态码 (见 MotorState)
+    # —— 轨迹 (输出轴单位) ——
+    TRAJ_INIT               = (  82,    1.0)   # 无参数
+    TRAJ_DEINIT             = (  83,    1.0)   # 无参数
+    TRAJ_VEL_MAX            = (  84,  100.0)   # param·GEAR/100 ⇒ 输出轴 param/100
+    TRAJ_ACL_MAX            = (  85,  100.0)
+    TRAJ_POS_CMD            = (  86,  100.0)
+    # —— 设备级 (无参数) ——
+    HOMING                  = ( 102,    1.0)
+    FLASHING_PARAMS         = ( 103,    1.0)
+    SYS_IDEN                = ( 104,    1.0)
+    CLEAR_FLASH_ERROR       = ( 122,    1.0)
+
+    @classmethod
+    def scale_of(cls, func):
+        """浮点物理量 -> int16 定点数 的缩放乘数 (param = round(物理量 × scale))。"""
+        return cls(func).scale
 
 
-# router.h RouterControlMode 逐字节抄写：
-#   每行 = 某电机的 (Position, Velocity, Torque, Spring, Damper, Inertia, SwitchID, ModeSelect)
-_CONTROL_MODE_TABLE = {
-    0: (1,   2,   3,   4,   5,   6,   7,   20),
-    1: (11,  12,  13,  14,  15,  16,  17,  40),
-    2: (41,  42,  43,  44,  45,  46,  47,  60),
-    3: (61,  62,  63,  64,  65,  66,  67,  80),
-    4: (81,  82,  83,  84,  85,  86,  87,  100),
-    5: (101, 102, 103, 104, 105, 106, 107, 120),
-    6: (121, 122, 123, 124, 125, 126, 127, 140),
-}
-_FUNC_ORDER = (
-    MotorFunc.POSITION, MotorFunc.VELOCITY, MotorFunc.TORQUE,
-    MotorFunc.IMPEDANCE_SPRING, MotorFunc.IMPEDANCE_DAMPER, MotorFunc.IMPEDANCE_INERTIA,
-    MotorFunc.SWITCH_ID, MotorFunc.MODE_SELECT,
-)
-
-# 展开成 {(func, motor): mode_code}
-CONTROL_MODE = {
-    (func, motor): _CONTROL_MODE_TABLE[motor][pos]
-    for motor, row in _CONTROL_MODE_TABLE.items()
-    for pos, func in enumerate(_FUNC_ORDER)
-}
-
-NOP = 0   # 固件无此 case，落 default:break，可用作无害占位
-
-
-def mode_for(func, motor):
-    """(逻辑功能, 电机号 0~6) -> 固件 Control_Mode 数值。"""
-    try:
-        return CONTROL_MODE[(MotorFunc(func), int(motor))]
-    except KeyError:
-        raise ValueError(f"无对应 Control_Mode: func={func!r}, motor={motor!r}")
-
-
-# 浮点物理量 -> int16 定点数 的缩放系数 (取自 router.c handler 里的除数)。
-#   Position  : param/100   -> ×100
-#   Velocity  : param/1000  -> ×1000
-#   Torque    : param/1     -> ×1     (实为电流指令, 单位约定见固件)
-#   Impedance : param/100   -> ×100   (弹簧/阻尼/惯量三者相同)
-#   SwitchID  : 直接 uint16  -> ×1
-#   ModeSelect: 原始状态码    -> ×1
-FUNC_SCALE = {
-    MotorFunc.POSITION: 100.0,
-    MotorFunc.VELOCITY: 1000.0,
-    MotorFunc.TORQUE: 1.0,
-    MotorFunc.IMPEDANCE_SPRING: 100.0,
-    MotorFunc.IMPEDANCE_DAMPER: 100.0,
-    MotorFunc.IMPEDANCE_INERTIA: 100.0,
-    MotorFunc.SWITCH_ID: 1.0,
-    MotorFunc.MODE_SELECT: 1.0,
-}
-
-
-def scale_of(func):
-    return FUNC_SCALE[MotorFunc(func)]
+# 电机路由补齐用的空命令：固件 switch 无此 case -> 落 default 被安全忽略。
+# 用于给"未寻址的那个电机"占位，保证命令列表前后两半等长 (见模块顶部说明)。
+NOP_MODE = 0
 
 
 # ==================================================================== 电机状态机
-# 用于：① 解析 Tx 反馈里的 state 曲线；② 作为 MODE_SELECT 命令的参数(状态码)。
-# ⚠ 待确认：ServiceStateCmd 接收的状态码是否与下面反馈解析用的枚举完全同一套。
-MOTOR_STATE = {
-    "StartupError": 1, "StartupReady": 2, "StartupParamsInit": 3,
-    "StartupCurrentCalib": 4, "StartupPhaseDiag": 5, "StartupElecAngleDrag": 6,
-    "StartupElecAngleDone": 7, "StartupDisable": 20,
-    "DbgCurrentError": 21, "DbgCurrentAlphaBeta": 22, "DbgCurrentOpenLoop": 23,
-    "DbgCurrentOnlyIdClosedLoop": 24, "DbgCurrentClosedLoop": 25,
-    "DbgCurrentClosedLoop_IqSysIden": 26, "DbgCurrentClosedLoop_IdSysIden": 27,
-    "DbgCurrentOpenLoop_UqSysIden": 28, "DbgCurrentOpenLoop_UdSysIden": 29,
-    "DbgCurrentDisable": 40,
-    "DbgVelocityError": 41, "DbgVelocityClosedLoop_SysIden": 42, "DbgVelocityDisable": 60,
-    "DbgPositionError": 61, "DbgPositionClosedLoop_SysIden": 62, "DbgPositionDisable": 80,
-    "AppError": 81, "AppCurrentCtrl": 82, "AppTorqueCtrl": 83, "AppImpedanceCtrl": 84,
-    "AppVelocityCtrl": 85, "AppPositionCtrl": 86, "AppDisable": 100,
-    "InnerOuterMismatch": 255,
-}
-MOTOR_STATE_NAME = {v: k for k, v in MOTOR_STATE.items()}
+class MotorState:
+    """
+    电机状态机 —— 逐条对应固件 MotorStateType 枚举 (名称/数值已核对一致)。
+    用于：① 解析 Tx 反馈里的 state 曲线；② 作为 DISPATCH_STATE 命令的参数(状态码)。
+    反馈解析与命令派发共用同一套：固件 DispatchStateMachine 收的即此枚举。
+    """
 
+    CODES = {
+        "StartupError": 1, "StartupReady": 2, "StartupParamsInit": 3,
+        "StartupCurrentCalib": 4, "StartupPhaseDiag": 5, "StartupElecAngleDrag": 6,
+        "StartupElecAngleDone": 7, "StartupDisable": 20,
+        "DbgCurrentError": 21, "DbgCurrentAlphaBeta": 22, "DbgCurrentOpenLoop": 23,
+        "DbgCurrentOnlyIdClosedLoop": 24, "DbgCurrentClosedLoop": 25,
+        "DbgCurrentClosedLoop_IqSysIden": 26, "DbgCurrentClosedLoop_IdSysIden": 27,
+        "DbgCurrentOpenLoop_UqSysIden": 28, "DbgCurrentOpenLoop_UdSysIden": 29,
+        "DbgCurrentDisable": 40,
+        "DbgVelocityError": 41, "DbgVelocityClosedLoop_SysIden": 42, "DbgVelocityDisable": 60,
+        "DbgPositionError": 61, "DbgPositionClosedLoop_SysIden": 62, "DbgPositionDisable": 80,
+        "AppError": 81, "AppCurrentCtrl": 82, "AppTorqueCtrl": 83, "AppImpedanceCtrl": 84,
+        "AppVelocityCtrl": 85, "AppPositionCtrl": 86, "AppDisable": 100,
+        "InnerOuterMismatch": 255,
+    }
+    NAMES = {v: k for k, v in CODES.items()}
 
-def state_name(code):
-    if code is None:
-        return None
-    return MOTOR_STATE_NAME.get(code, f"Unknown({code})")
+    @classmethod
+    def name(cls, code):
+        """状态码 -> 状态名 (未知码返回 Unknown(code)，None 原样返回)。"""
+        if code is None:
+            return None
+        return cls.NAMES.get(code, f"Unknown({code})")

@@ -1,29 +1,29 @@
 """
 串口指令发送器 (对齐 router.h / router.c 真值版)。
 
-数据流：高层命令 -> 按 (功能, 电机) 查 mode 号 -> 按 FUNC_SCALE 量化
-        -> 组扁平命令列表 -> RxCommandCodec 编码 -> SerialManager.write_data。
+数据流：高层命令 -> 按功能取 MotorFunc 的 mode 值与 scale 量化
+        -> 分成"电机0命令 / 电机1命令"两组 -> RxCommandCodec 按前/后半段编码
+        -> SerialManager.write_data。
 
-固件支持的功能 (会真正生效)：
-    位置 / 速度 / 力矩(电流) / 阻抗(弹簧·阻尼·惯量) / 换ID / 状态派发。
-固件未实现的功能 (调用即抛 UnsupportedCommand，避免误发错误 mode)：
-    Iq/Id、弹簧原点、各环 PID、轨迹、回零、刷参、系统辨识、清Flash。
+电机路由：mode 与电机无关，电机由命令在帧里的前/后半段位置决定 (见 constants 顶部说明)。
+本层只负责把命令分到 motor0 / motor1 两组，补齐与切分交给编码器。
 """
 
-from sdk.protocol.constants import (
-    MotorFunc, CommFunc, mode_for, scale_of, MOTOR_STATE,
-)
+from sdk.protocol.constants import MotorFunc, CommFunc, MotorState
 from sdk.protocol.rx_command_codec import RxCommandCodec
 from sdk.models import MotorCommand, MotorTarget
-
-
-class UnsupportedCommand(Exception):
-    """该固件 (router.c) 未实现的指令。"""
 
 
 class SerialCommander:
 
     def __init__(self, serial_manager, func=CommFunc.RX_FDCAN_COMMAND, pad_canfd=None):
+        """
+        参数:
+            serial_manager: SerialManager，编码后的帧由它的 write_data 发出。
+            func:           命令帧 Func (CommFunc)，随物理链路选 FDCAN / USB-USART。
+            pad_canfd:      是否补齐到 CAN-FD 合法长度；None 时由编码器按 func 自动判定。
+        用法: SerialCommander(manager, func=cfg.command_func, pad_canfd=cfg.resolved_pad_canfd())
+        """
         self.sm = serial_manager
         self.codec = RxCommandCodec()
         self.func = func
@@ -32,20 +32,35 @@ class SerialCommander:
 
     # ============================================================ 底层
     def _next_counter(self):
+        """取当前发送帧计数器并自增 (0~255 回绕)，用于下位机检测丢帧。"""
         c = self._tx_counter
         self._tx_counter = (self._tx_counter + 1) & 0xFF
         return c
 
     def _quant(self, func, value):
-        return int(round(value * scale_of(func)))
+        """按功能码的 scale 把浮点物理量量化成下发整数：round(value × scale)。"""
+        return int(round(value * MotorFunc.scale_of(func)))
 
-    def _send(self, mcu, commands):
-        if not commands:
+    def _cmd(self, func, value):
+        """一条量化后的命令 (mode 取功能码，与电机无关)。"""
+        return MotorCommand(int(func), self._quant(func, value))
+
+    def _bare(self, func, param=0):
+        """无参数功能 (回零/刷参/轨迹初始化…) 的命令，param 直接透传。"""
+        return MotorCommand(int(func), int(param))
+
+    def _send(self, mcu, motor0_cmds, motor1_cmds):
+        """
+        把电机0 / 电机1 两组命令交编码器组帧并发送。
+        两组都为空则直接判失败；编码抛 ValueError (如超命令上限) 时打印并返回 False。
+        返回 bool：是否成功写入串口。所有对外 send_* 方法最终都汇到这里。
+        """
+        if not motor0_cmds and not motor1_cmds:
             print("[发送失败] 命令列表为空")
             return False
         try:
             frame = self.codec.encode(
-                mcu, commands,
+                mcu, motor0_cmds, motor1_cmds,
                 counter=self._next_counter(),
                 func=self.func,
                 pad_canfd=self.pad_canfd,
@@ -57,144 +72,133 @@ class SerialCommander:
 
     @staticmethod
     def _as_target(motor):
+        """把 MotorTarget / 'both' / 0 / 1 统一归一化成 MotorTarget 枚举 (兼容多种调用写法)。"""
         if isinstance(motor, MotorTarget):
             return motor
         return {"both": MotorTarget.BOTH, 0: MotorTarget.MOTOR_0,
                 1: MotorTarget.MOTOR_1}[motor]
 
-    @classmethod
-    def _motors_of(cls, motor):
-        """把目标解析成电机下标列表 [0] / [1] / [0,1]。"""
-        t = cls._as_target(motor)
-        out = []
-        if t.hits_motor0():
-            out.append(0)
-        if t.hits_motor1():
-            out.append(1)
-        return out
+    # ---------------------------------------------------------------- 两种分组方式
+    def _paired(self, mcu, func, v0, v1):
+        """逐电机取值：v0->电机0, v1->电机1；None 表示该电机不发 (由编码器补 NOP)。"""
+        m0 = [self._cmd(func, v0)] if v0 is not None else []
+        m1 = [self._cmd(func, v1)] if v1 is not None else []
+        return self._send(mcu, m0, m1)
 
-    def _value_command(self, func, value, motor):
-        """按 (功能, 目标电机) 生成量化后的命令列表。"""
-        return [
-            MotorCommand(mode_for(func, m), self._quant(func, value))
-            for m in self._motors_of(motor)
-        ]
+    def _targeted(self, mcu, cmds, motor):
+        """共享的一组命令 cmds，按目标电机发给电机0 / 电机1 / 两者。"""
+        t = self._as_target(motor)
+        m0 = list(cmds) if t.hits_motor0() else []
+        m1 = list(cmds) if t.hits_motor1() else []
+        return self._send(mcu, m0, m1)
 
-    # ============================================================ 逐电机取值 (类型 A)
-    # pos0/pos1 分别对应电机0/电机1；None 表示该侧不发。
-    def _paired(self, func, v0, v1):
-        cmds = []
-        if v0 is not None:
-            cmds.append(MotorCommand(mode_for(func, 0), self._quant(func, v0)))
-        if v1 is not None:
-            cmds.append(MotorCommand(mode_for(func, 1), self._quant(func, v1)))
-        return cmds
-
+    # ============================================================ 基本控制 (逐电机取值)
+    # 以下 send_* 均为逐电机取值：v0->电机0, v1->电机1，None 表示该电机不发。
+    # mcu 可为 index 0~7 或 ID 0xB0~0xB7；返回 bool (是否成功写入)。
     def send_position(self, mcu, pos0=None, pos1=None):
-        return self._send(mcu, self._paired(MotorFunc.POSITION, pos0, pos1))
+        """下发位置指令 θ (输出轴 rad)。"""
+        return self._paired(mcu, MotorFunc.THETA_GEAR, pos0, pos1)
 
     def send_velocity(self, mcu, vel0=None, vel1=None):
-        return self._send(mcu, self._paired(MotorFunc.VELOCITY, vel0, vel1))
+        """下发速度指令 ω (输出轴 rad/s)。"""
+        return self._paired(mcu, MotorFunc.OMEGA_GEAR, vel0, vel1)
 
     def send_torque(self, mcu, tau0=None, tau1=None):
-        # 注意：固件 Torque 通道实际下发到电流环 (ServiceCurrentCmd)，缩放 ×1。
-        return self._send(mcu, self._paired(MotorFunc.TORQUE, tau0, tau1))
+        """下发力矩指令 τ (输出轴 N·m)。"""
+        return self._paired(mcu, MotorFunc.TORQUE_GEAR, tau0, tau1)
 
-    # ============================================================ 共享参数 + 目标电机 (类型 B)
+    def send_iq(self, mcu, iq0=None, iq1=None):
+        """下发 q 轴电流指令 iq (A)。"""
+        return self._paired(mcu, MotorFunc.IQ, iq0, iq1)
+
+    def send_impedance_origin(self, mcu, origin0=None, origin1=None):
+        """下发阻抗弹簧原点 (输出轴 rad)。"""
+        return self._paired(mcu, MotorFunc.IMPEDANCE_SPRING_ORIGIN, origin0, origin1)
+
+    # ============================================================ 共享参数 + 目标电机
+    # 以下方法把同一组参数按 motor (MotorTarget/'both'/0/1) 发给 电机0 / 电机1 / 两者。
     def send_impedance_params(self, mcu, spring, damper, inertia, motor=MotorTarget.BOTH):
-        cmds = []
-        for m in self._motors_of(motor):
-            cmds.append(MotorCommand(mode_for(MotorFunc.IMPEDANCE_SPRING, m),
-                                     self._quant(MotorFunc.IMPEDANCE_SPRING, spring)))
-            cmds.append(MotorCommand(mode_for(MotorFunc.IMPEDANCE_DAMPER, m),
-                                     self._quant(MotorFunc.IMPEDANCE_DAMPER, damper)))
-            cmds.append(MotorCommand(mode_for(MotorFunc.IMPEDANCE_INERTIA, m),
-                                     self._quant(MotorFunc.IMPEDANCE_INERTIA, inertia)))
-        return self._send(mcu, cmds)
+        """下发阻抗三参数：刚度 spring / 阻尼 damper / 惯量 inertia。"""
+        cmds = [self._cmd(MotorFunc.IMPEDANCE_SPRING, spring),
+                self._cmd(MotorFunc.IMPEDANCE_DAMPER, damper),
+                self._cmd(MotorFunc.IMPEDANCE_INERTIA, inertia)]
+        return self._targeted(mcu, cmds, motor)
+
+    def send_pos_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
+        """整定位置环 PID：kp/ki。"""
+        cmds = [self._cmd(MotorFunc.POS_PID_KP, kp), self._cmd(MotorFunc.POS_PID_KI, ki)]
+        return self._targeted(mcu, cmds, motor)
+
+    def send_vel_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
+        """整定速度环 PID：kp/ki。"""
+        cmds = [self._cmd(MotorFunc.VEL_PID_KP, kp), self._cmd(MotorFunc.VEL_PID_KI, ki)]
+        return self._targeted(mcu, cmds, motor)
+
+    def send_cur_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
+        """整定电流环 PID：kp/ki。"""
+        cmds = [self._cmd(MotorFunc.CUR_PID_KP, kp), self._cmd(MotorFunc.CUR_PID_KI, ki)]
+        return self._targeted(mcu, cmds, motor)
 
     def send_state(self, mcu, state, motor=MotorTarget.BOTH):
-        """状态机派发 (Mode_Select)。state 可为状态名或状态码。"""
+        """状态机派发 (DispatchMotorStateMachine)。state 可为状态名或状态码。"""
         if isinstance(state, str):
-            if state not in MOTOR_STATE:
+            if state not in MotorState.CODES:
                 print(f"[发送失败] 未知状态名: {state}")
                 return False
-            state = MOTOR_STATE[state]
-        cmds = [MotorCommand(mode_for(MotorFunc.MODE_SELECT, m), int(state))
-                for m in self._motors_of(motor)]
-        return self._send(mcu, cmds)
+            state = MotorState.CODES[state]
+        cmd = MotorCommand(int(MotorFunc.DISPATCH_STATE), int(state))
+        return self._targeted(mcu, [cmd], motor)
 
-    def send_switch_id(self, mcu, new_id, motor=MotorTarget.BOTH):
-        """修改电机 ID (Switch_ID)。参数为目标 ID，直接以 uint16 下发。"""
-        cmds = [MotorCommand(mode_for(MotorFunc.SWITCH_ID, m), int(new_id))
-                for m in self._motors_of(motor)]
-        return self._send(mcu, cmds)
+    # ============================================================ 轨迹
+    def send_trajectory(self, mcu, vel_max, acl_max, pos0=None, pos1=None):
+        """一次性设定轨迹的 vmax/amax 与逐电机目标位置。"""
+        def group(pos):
+            return [self._cmd(MotorFunc.TRAJ_VEL_MAX, vel_max),
+                    self._cmd(MotorFunc.TRAJ_ACL_MAX, acl_max),
+                    self._cmd(MotorFunc.TRAJ_POS_CMD, pos)]
+        m0 = group(pos0) if pos0 is not None else []
+        m1 = group(pos1) if pos1 is not None else []
+        return self._send(mcu, m0, m1)
+
+    def send_trajectory_pos(self, mcu, pos0=None, pos1=None):
+        """只更新轨迹目标位置 (输出轴 rad)，沿用上一帧的 vmax/amax。逐电机取值。"""
+        return self._paired(mcu, MotorFunc.TRAJ_POS_CMD, pos0, pos1)
+
+    # ============================================================ 设备级动作 (无参数)
+    def _action(self, mcu, func, motor):
+        """下发单条无参数功能码 func 到目标电机 (回零/刷参/轨迹初始化等的公共实现)。"""
+        return self._targeted(mcu, [self._bare(func)], motor)
+
+    def send_traj_init(self, mcu, motor=MotorTarget.BOTH):
+        """轨迹模块初始化。"""
+        return self._action(mcu, MotorFunc.TRAJ_INIT, motor)
+
+    def send_traj_deinit(self, mcu, motor=MotorTarget.BOTH):
+        """轨迹模块反初始化。"""
+        return self._action(mcu, MotorFunc.TRAJ_DEINIT, motor)
+
+    def send_homing(self, mcu, motor=MotorTarget.BOTH):
+        """触发回零。"""
+        return self._action(mcu, MotorFunc.HOMING, motor)
+
+    def send_flashing_params(self, mcu, motor=MotorTarget.BOTH):
+        """把当前参数刷写进 Flash。"""
+        return self._action(mcu, MotorFunc.FLASHING_PARAMS, motor)
+
+    def send_sysiden(self, mcu, motor=MotorTarget.BOTH):
+        """触发系统辨识。"""
+        return self._action(mcu, MotorFunc.SYS_IDEN, motor)
+
+    def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
+        """清除 Flash 错误标志。"""
+        return self._action(mcu, MotorFunc.CLEAR_FLASH_ERROR, motor)
 
     # ============================================================ RAW 透传
     def send_raw_command(self, mcu, mode, param0=None, param1=None):
         """
         直接下发指定 mode 与定点参数，不做换算。
-
-        注意：现固件按 mode 自带的 M0/M1 区分电机，因此若要分别控制两个电机，
-        请分别填入两条【不同 mode】的原始指令；这里的 param0/param1 只是把
-        (mode, param0)、(mode, param1) 各发一条 (同一 mode 发两次通常无意义)。
+        param0 -> 电机0 (前半段)，param1 -> 电机1 (后半段)；None 表示该电机不发。
         """
-        cmds = []
-        if param0 is not None:
-            cmds.append(MotorCommand(int(mode), int(param0)))
-        if param1 is not None:
-            cmds.append(MotorCommand(int(mode), int(param1)))
-        return self._send(mcu, cmds)
-
-    # ============================================================ 固件未实现 (显式拒绝)
-    def _unsupported(self, name):
-        raise UnsupportedCommand(f"{name}：当前固件 (router.c) 未实现该指令")
-
-    def send_iq(self, mcu, iq0=None, iq1=None):
-        self._unsupported("电流 Iq 直控")
-
-    def send_id(self, mcu, id0=None, id1=None):
-        self._unsupported("电流 Id 直控")
-
-    def send_impedance_origin(self, mcu, origin0=None, origin1=None):
-        self._unsupported("阻抗弹簧原点")
-
-    def send_pos_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
-        self._unsupported("位置环 PID 整定")
-
-    def send_vel_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
-        self._unsupported("速度环 PID 整定")
-
-    def send_cur_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
-        self._unsupported("电流环 PID 整定")
-
-    def send_trajectory(self, mcu, vel_max, acl_max, pos0=None, pos1=None):
-        self._unsupported("轨迹规划")
-
-    def send_trajectory_pos(self, mcu, pos0=None, pos1=None):
-        self._unsupported("轨迹目标位置")
-
-    def send_homing(self, mcu, motor=MotorTarget.BOTH):
-        self._unsupported("回零 Homing")
-
-    def send_flashing_params(self, mcu, motor=MotorTarget.BOTH):
-        self._unsupported("刷写参数")
-
-    def send_traj_init(self, mcu, motor=MotorTarget.BOTH):
-        self._unsupported("轨迹初始化")
-
-    def send_traj_deinit(self, mcu, motor=MotorTarget.BOTH):
-        self._unsupported("轨迹反初始化")
-
-    def send_sysiden(self, mcu, motor=MotorTarget.BOTH):
-        self._unsupported("系统辨识")
-
-    def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
-        self._unsupported("清除 Flash 错误")
-
-
-# 已由本固件实现、GUI 可放心使用的功能 (供界面按需灰化未实现项)
-FIRMWARE_SUPPORTED = frozenset({
-    "send_position", "send_velocity", "send_torque",
-    "send_impedance_params", "send_state", "send_switch_id",
-    "send_raw_command",
-})
+        m0 = [MotorCommand(int(mode), int(param0))] if param0 is not None else []
+        m1 = [MotorCommand(int(mode), int(param1))] if param1 is not None else []
+        return self._send(mcu, m0, m1)
