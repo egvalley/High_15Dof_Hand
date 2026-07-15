@@ -227,7 +227,6 @@ class HighDofHandGUI:
             ("刷写参数", "send_flashing_params"),
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
-            ("系统辨识", "send_sysiden"),
             ("清除Flash错误", "send_clear_flash_error"),
         ]
         for k, (label, fn) in enumerate(actions):

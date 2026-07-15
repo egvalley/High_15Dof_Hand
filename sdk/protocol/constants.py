@@ -12,7 +12,7 @@
 
 Control_Mode 取值 = router.h RouterControlMode 枚举 (见 MotorFunc)，固件已实现：
   位置 / 速度 / 力矩 · Iq / Id · 阻抗(弹簧/阻尼/惯量/原点) · 各环 PID ·
-  状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零 · 刷参 · 系统辨识 · 清Flash。
+  状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零 · 刷参 · 清Flash。
 """
 
 from enum import IntEnum
@@ -152,7 +152,6 @@ class MotorFunc(IntEnum):
     # —— 设备级 (无参数) ——
     HOMING                  = ( 102,    1.0)
     FLASHING_PARAMS         = ( 103,    1.0)
-    SYS_IDEN                = ( 104,    1.0)
     CLEAR_FLASH_ERROR       = ( 122,    1.0)
 
     @classmethod

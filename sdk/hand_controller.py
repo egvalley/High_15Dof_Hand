@@ -91,7 +91,7 @@ class HandController:
         """
         下发无参数设备级动作。action_name 为 commander 上的方法名，
         如 'send_homing' / 'send_flashing_params' / 'send_traj_init' / 'send_traj_deinit'
-        / 'send_sysiden' / 'send_clear_flash_error'。
+        / 'send_clear_flash_error'。
         用 getattr 分派，便于 GUI 用 (按钮文案, 方法名) 表驱动。
         """
         return self._run(mcu_indices,

@@ -171,10 +171,6 @@ class SerialCommander:
         """把当前参数刷写进 Flash。"""
         return self._action(mcu, MotorFunc.FLASHING_PARAMS, motor)
 
-    def send_sysiden(self, mcu, motor=MotorTarget.BOTH):
-        """触发系统辨识。"""
-        return self._action(mcu, MotorFunc.SYS_IDEN, motor)
-
     def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
         """清除 Flash 错误标志。"""
         return self._action(mcu, MotorFunc.CLEAR_FLASH_ERROR, motor)

@@ -42,7 +42,7 @@ High_15Dof_Hand-work/
 
 1. **ControlMode 数值**：`MotorFunc` 的每个成员逐值对应 router.h `RouterControlMode`
    枚举（位置 `THETA_GEAR=6`、速度 `OMEGA_GEAR=7`、力矩 `TORQUE_GEAR=8`、阻抗 `32~35`、
-   PID `52~57`、状态派发 `72`、轨迹 `82~86`、回零/刷参/辨识 `102~104`、清Flash `122`）。
+   PID `52~57`、状态派发 `72`、轨迹 `82~86`、回零/刷参 `102~103`、清Flash `122`）。
 2. **双电机区分**：确认靠命令在帧里的**前/后半段位置**区分——前半段→电机0(M1)、
    后半段→电机1(M2)，两段 switch 共用同一套 mode 值。编码器按此路由，两半用 `NOP_MODE`
    补齐到等长，使固件切分点 `command_num//2` 恰好落在中间。
@@ -58,7 +58,7 @@ High_15Dof_Hand-work/
 ## 固件功能集
 
 本固件 handler 均已实现：位置 / 速度 / 力矩 · Iq/Id · 阻抗(弹簧·阻尼·惯量·原点) ·
-各环 PID · 状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零 · 刷参 · 系统辨识 · 清Flash。
+各环 PID · 状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零 · 刷参 · 清Flash。
 `SerialCommander` 对上述全部提供发送方法（旧版误判为"未实现"的那批现已接通）。
 注意：旧版曾有的"换 ID (Switch_ID)"在本固件中**无对应 case**，已从 SDK 移除。
 
