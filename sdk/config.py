@@ -26,11 +26,6 @@ class AppConfig:
     #   这里默认沿用 FDCAN 命令码；确认固件后可改成 RX_USB_USART_COMMAND。
     command_func: CommFunc = CommFunc.RX_FDCAN_COMMAND
 
-    # 是否把命令帧补齐到 CAN-FD 合法长度。
-    #   走 FDCAN 时必须补齐；走纯串口时补不补都能被固件按 command_num 正确解析。
-    #   默认跟随 command_func 是否为 FDCAN。
-    pad_canfd: bool = None  # None => 自动根据 command_func 判定
-
     # GUI 刷新周期 (ms) ≈ 20 Hz
     refresh_ms: int = 50
 
@@ -40,13 +35,3 @@ class AppConfig:
 
     # 日志最大行数
     log_max_lines: int = 400
-
-    def resolved_pad_canfd(self):
-        """
-        解析最终是否补齐 CAN-FD 长度：显式设了 pad_canfd 就用它，
-        否则按 command_func 是否为 FDCAN 自动判定。
-        用法: SerialCommander(..., pad_canfd=cfg.resolved_pad_canfd())。
-        """
-        if self.pad_canfd is not None:
-            return self.pad_canfd
-        return self.command_func == CommFunc.RX_FDCAN_COMMAND

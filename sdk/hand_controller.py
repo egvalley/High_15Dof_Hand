@@ -10,7 +10,6 @@
 
 from sdk.models import CommandResult, MotorTarget
 
-
 class HandController:
 
     def __init__(self, serial_manager, commander):
@@ -66,10 +65,6 @@ class HandController:
         """向选中 MCU 下发阻抗弹簧原点 (输出轴 rad) 到目标电机。"""
         return self._run(mcu_indices, lambda c, i: c.send_impedance_origin(i, origin, motor))
 
-    def send_trajectory_pos(self, mcu_indices, pos, motor=MotorTarget.BOTH):
-        """只更新轨迹目标位置 (输出轴 rad)，不重设 vmax/amax。发到目标电机。"""
-        return self._run(mcu_indices, lambda c, i: c.send_trajectory_pos(i, pos, motor))
-
     # ------------------------------------- 类型 B：共享参数 + 目标电机 (motor 选 M0/M1/两者)
     def send_state(self, mcu_indices, state, motor=MotorTarget.BOTH):
         """派发电机状态机。state 可为状态名 (如 'AppPositionCtrl') 或状态码 int。"""
@@ -107,3 +102,11 @@ class HandController:
         """下发完整轨迹指令：速度上限/加速度上限 + 目标位置，发到目标电机。"""
         return self._run(mcu_indices,
                          lambda c, i: c.send_trajectory(i, vel_max, acl_max, pos, motor))
+    def send_trajectory_pos(self, mcu_indices, pos, motor=MotorTarget.BOTH):
+        """只更新轨迹目标位置 (输出轴 rad)，不重设 vmax/amax。发到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_trajectory_pos(i, pos, motor))
+
+    def send_trajectory_limits(self, mcu_indices, vel_max, acl_max, motor=MotorTarget.BOTH):
+        """只更新轨迹的 vmax/amax (不下发目标位置)，沿用上一帧的 pos_cmd。发到目标电机。"""
+        return self._run(mcu_indices,
+                         lambda c, i: c.send_trajectory_limits(i, vel_max, acl_max, motor))

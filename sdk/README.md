@@ -50,6 +50,10 @@ High_15Dof_Hand-work/
    位置/速度/力矩/轨迹 ×100、阻抗弹簧 ×10、阻尼 ×100、惯量 ×1000、Iq/Id 与电流/速度 PID
    ×1000、位置 PID ×1、状态码 ×1。
 4. **Func**：默认 `RX_FDCAN_COMMAND`（固件未校验），`config.py` 可一键切 USB_USART。
+5. **CAN-FD 帧长补齐**：本项目固定走 FDCAN 发送，命令帧在编码末尾**恒定**补 0 到下一个
+   CAN-FD 合法长度（8/12/16/20/24/32/48/64）。因是固定行为，已去掉旧的 `pad_canfd` 开关
+   （原 `AppConfig.pad_canfd` 字段、`resolved_pad_canfd()` 及各层传参），补齐逻辑内聚在
+   `RxCommandCodec._canfd_pad`。
 
 ## 固件功能集
 

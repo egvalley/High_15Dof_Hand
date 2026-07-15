@@ -16,18 +16,16 @@ from sdk.models import MotorCommand, MotorTarget
 
 class SerialCommander:
 
-    def __init__(self, serial_manager, func=CommFunc.RX_FDCAN_COMMAND, pad_canfd=None):
+    def __init__(self, serial_manager, func=CommFunc.RX_FDCAN_COMMAND):
         """
         参数:
             serial_manager: SerialManager，编码后的帧由它的 write_data 发出。
             func:           命令帧 Func (CommFunc)，随物理链路选 FDCAN / USB-USART。
-            pad_canfd:      是否补齐到 CAN-FD 合法长度；None 时由编码器按 func 自动判定。
-        用法: SerialCommander(manager, func=cfg.command_func, pad_canfd=cfg.resolved_pad_canfd())
+        用法: SerialCommander(manager, func=cfg.command_func)
         """
         self.sm = serial_manager
         self.codec = RxCommandCodec()
         self.func = func
-        self.pad_canfd = pad_canfd
         self._tx_counter = 0
 
     # ============================================================ 底层
@@ -37,17 +35,10 @@ class SerialCommander:
         self._tx_counter = (self._tx_counter + 1) & 0xFF
         return c
 
-    def _quant(self, func, value):
-        """按功能码的 scale 把浮点物理量量化成下发整数：round(value × scale)。"""
-        return int(round(value * MotorFunc.scale_of(func)))
-
     def _cmd(self, func, value):
-        """一条量化后的命令 (mode 取功能码，与电机无关)。"""
-        return MotorCommand(int(func), self._quant(func, value))
-
-    def _bare(self, func, param=0):
-        """无参数功能 (回零/刷参/轨迹初始化…) 的命令，param 直接透传。"""
-        return MotorCommand(int(func), int(param))
+        """一条量化后的命令：mode 取功能码 (与电机无关)，value 按其 scale 量化为 round(value × scale)。"""
+        quantized = int(round(value * MotorFunc.scale_of(func)))
+        return MotorCommand(int(func), quantized)
 
     def _send(self, mcu, motor0_cmds, motor1_cmds):
         """
@@ -63,25 +54,23 @@ class SerialCommander:
                 mcu, motor0_cmds, motor1_cmds,
                 counter=self._next_counter(),
                 func=self.func,
-                pad_canfd=self.pad_canfd,
             )
         except ValueError as e:
             print(f"[发送失败] {e}")
             return False
         return self.sm.write_data(frame)
 
-    @staticmethod
-    def _as_target(motor):
-        """把 MotorTarget / 'both' / 0 / 1 统一归一化成 MotorTarget 枚举 (兼容多种调用写法)。"""
-        if isinstance(motor, MotorTarget):
-            return motor
-        return {"both": MotorTarget.BOTH, 0: MotorTarget.MOTOR_0,
-                1: MotorTarget.MOTOR_1}[motor]
-
     # ---------------------------------------------------------------- 按目标电机分组
     def _targeted(self, mcu, cmds, motor):
-        """共享的一组命令 cmds，按目标电机发给电机0 / 电机1 / 两者。"""
-        t = self._as_target(motor)
+        """
+        共享的一组命令 cmds，按目标电机发给电机0 / 电机1 / 两者。
+        motor 先归一化：MotorTarget 原样使用，'both' / 0 / 1 兼容映射成对应枚举。
+        """
+        if isinstance(motor, MotorTarget):
+            t = motor
+        else:
+            t = {"both": MotorTarget.BOTH, 0: MotorTarget.MOTOR_0,
+                 1: MotorTarget.MOTOR_1}[motor]
         m0 = list(cmds) if t.hits_motor0() else []
         m1 = list(cmds) if t.hits_motor1() else []
         return self._send(mcu, m0, m1)
@@ -151,14 +140,20 @@ class SerialCommander:
                 self._cmd(MotorFunc.TRAJ_POS_CMD, pos)]
         return self._targeted(mcu, cmds, motor)
 
+    def send_trajectory_limits(self, mcu, vel_max, acl_max, motor=MotorTarget.BOTH):
+        """只更新轨迹的 vmax/amax (不下发目标位置)，沿用上一帧的 pos_cmd。发到目标电机。"""
+        cmds = [self._cmd(MotorFunc.TRAJ_VEL_MAX, vel_max),
+                self._cmd(MotorFunc.TRAJ_ACL_MAX, acl_max)]
+        return self._targeted(mcu, cmds, motor)
+
     def send_trajectory_pos(self, mcu, pos, motor=MotorTarget.BOTH):
         """只更新轨迹目标位置 (输出轴 rad)，沿用上一帧的 vmax/amax。发到目标电机。"""
         return self._targeted(mcu, [self._cmd(MotorFunc.TRAJ_POS_CMD, pos)], motor)
 
     # ============================================================ 设备级动作 (无参数)
     def _action(self, mcu, func, motor):
-        """下发单条无参数功能码 func 到目标电机 (回零/刷参/轨迹初始化等的公共实现)。"""
-        return self._targeted(mcu, [self._bare(func)], motor)
+        """下发单条无参数功能码 func (param 恒为 0) 到目标电机 (回零/刷参/轨迹初始化等的公共实现)。"""
+        return self._targeted(mcu, [MotorCommand(int(func), 0)], motor)
 
     def send_traj_init(self, mcu, motor=MotorTarget.BOTH):
         """轨迹模块初始化。"""

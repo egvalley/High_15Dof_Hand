@@ -44,7 +44,7 @@ class RxCommandCodec:
         return frame
 
     def encode(self, mcu, motor0_commands, motor1_commands,
-               counter=0, func=CommFunc.RX_FDCAN_COMMAND, pad_canfd=None):
+               counter=0, func=CommFunc.RX_FDCAN_COMMAND):
         """
         参数:
             mcu:             index 0~7 或 ID 0xB0~0xB7
@@ -52,9 +52,9 @@ class RxCommandCodec:
             motor1_commands: list[MotorCommand]，发给电机1 (后半段/M2)
             counter:         帧计数器 0~255
             func:            CommFunc
-            pad_canfd:       是否补齐到 CAN-FD 合法长度；None 时按 func 是否 FDCAN 判定
         返回:
             bytes
+        编码后统一补齐到 CAN-FD 合法长度 (本项目走 FDCAN)。
         """
         # 两半用 NOP 补齐到等长，再拼成 [电机0命令... 电机1命令...]，令固件切分点落在正中
         half = max(len(motor0_commands), len(motor1_commands))
@@ -72,8 +72,6 @@ class RxCommandCodec:
                 f"(每个电机最多 {RxFrame.MAX_COMMANDS // 2} 条)")
 
         target_id = McuConfig.id_of(mcu)
-        if pad_canfd is None:
-            pad_canfd = (func == CommFunc.RX_FDCAN_COMMAND)
 
         data = bytearray()
         data.append(RxFrame.HEADER)
@@ -86,7 +84,4 @@ class RxCommandCodec:
             data += struct.pack("<h", self.clamp_int16(cmd.value))
         data.append(RxFrame.TAIL)
 
-        if pad_canfd:
-            data = self._canfd_pad(data)
-
-        return bytes(data)
+        return bytes(self._canfd_pad(data))

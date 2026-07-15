@@ -296,6 +296,8 @@ class HighDofHandGUI:
         ttk.Button(f, text="发送轨迹", width=10, command=self._do_traj).pack(side="left", padx=6)
         ttk.Button(f, text="仅更新位置", width=12,
                    command=self._do_traj_pos_only).pack(side="left", padx=2)
+        ttk.Button(f, text="仅更新限幅", width=12,
+                   command=self._do_traj_limits_only).pack(side="left", padx=2)
 
     def _build_pid_section(self, parent):
         """PID 分区：位置/速度/电流环各一行 (Kp/Ki + 发送)，表驱动，发送走 _do_pid。"""
@@ -339,7 +341,6 @@ class HighDofHandGUI:
             self.commander = SerialCommander(
                 self.manager,
                 func=self.config.command_func,
-                pad_canfd=self.config.resolved_pad_canfd(),
             )
             self.controller = HandController(self.manager, self.commander)
             self._ui_connected = True
@@ -453,6 +454,18 @@ class HighDofHandGUI:
             return
         results = self.controller.send_trajectory_pos(self._targets(), p, self._motor_target())
         self._show_results(f"轨迹位置 [{p}]", results)
+
+    def _do_traj_limits_only(self):
+        """"仅更新限幅"回调：只发 vmax/amax，沿用上一帧目标位置。"""
+        if not self._ensure_connected():
+            return
+        try:
+            v, a = self._getf("tj_v"), self._getf("tj_a")
+        except ValueError:
+            messagebox.showwarning("输入错误", "轨迹限幅: 请输入有效数字")
+            return
+        results = self.controller.send_trajectory_limits(self._targets(), v, a, self._motor_target())
+        self._show_results(f"轨迹限幅 [v={v}, a={a}]", results)
 
     # ============================================================ 日志
     def _show_results(self, desc, results):
