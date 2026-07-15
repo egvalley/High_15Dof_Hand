@@ -15,7 +15,7 @@ class MotorTarget(Enum):
 
     MOTOR_0 = 0
     MOTOR_1 = 1
-    BOTH = "both"
+    BOTH = 2
 
     def hits_motor0(self):
         """本目标是否作用于电机0 (MOTOR_0 或 BOTH 时为 True)。用于决定电机0的命令/输入框是否生效。"""

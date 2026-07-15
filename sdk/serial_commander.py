@@ -64,19 +64,19 @@ class SerialCommander:
     def _targeted(self, mcu, cmds, motor):
         """
         共享的一组命令 cmds，按目标电机发给电机0 / 电机1 / 两者。
-        motor 先归一化：MotorTarget 原样使用，'both' / 0 / 1 兼容映射成对应枚举。
+        motor 先归一化：MotorTarget 原样使用，0 / 1 / 2 兼容映射成对应枚举。
         """
         if isinstance(motor, MotorTarget):
             t = motor
         else:
-            t = {"both": MotorTarget.BOTH, 0: MotorTarget.MOTOR_0,
-                 1: MotorTarget.MOTOR_1}[motor]
+            t = {0: MotorTarget.MOTOR_0, 1: MotorTarget.MOTOR_1,
+                 2: MotorTarget.BOTH}[motor]
         m0 = list(cmds) if t.hits_motor0() else []
         m1 = list(cmds) if t.hits_motor1() else []
         return self._send(mcu, m0, m1)
 
     # ============================================================ 基本控制 (单值 + 目标电机)
-    # 以下 send_* 把同一数值按 motor (MotorTarget/'both'/0/1) 发给 电机0 / 电机1 / 两者。
+    # 以下 send_* 把同一数值按 motor (MotorTarget/0/1/2) 发给 电机0 / 电机1 / 两者。
     # mcu 可为 index 0~7 或 ID 0xB0~0xB7；返回 bool (是否成功写入)。
     def send_position(self, mcu, pos, motor=MotorTarget.BOTH):
         """下发位置指令 θ (输出轴 rad) 到目标电机。"""
@@ -99,7 +99,7 @@ class SerialCommander:
         return self._targeted(mcu, [self._cmd(MotorFunc.IMPEDANCE_SPRING_ORIGIN, origin)], motor)
 
     # ============================================================ 共享参数 + 目标电机
-    # 以下方法把同一组参数按 motor (MotorTarget/'both'/0/1) 发给 电机0 / 电机1 / 两者。
+    # 以下方法把同一组参数按 motor (MotorTarget/0/1/2) 发给 电机0 / 电机1 / 两者。
     def send_impedance_params(self, mcu, spring, damper, inertia, motor=MotorTarget.BOTH):
         """下发阻抗三参数：刚度 spring / 阻尼 damper / 惯量 inertia。"""
         cmds = [self._cmd(MotorFunc.IMPEDANCE_SPRING, spring),

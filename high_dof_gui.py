@@ -563,3 +563,18 @@ class HighDofHandGUI:
             self._log("[ERR] 串口连接已断开")
 
         self.root.after(self.config.refresh_ms, self._update_loop)
+
+
+def main():
+    """
+    程序入口：创建 Tk 根窗口、用默认 AppConfig 启动 GUI 并进入事件循环。
+
+    用法：命令行执行 `python high_dof_gui.py`。
+    """
+    root = tk.Tk()
+    HighDofHandGUI(root, config=AppConfig())
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
