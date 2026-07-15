@@ -184,8 +184,7 @@ class HighDofHandGUI:
                                         width=10, state="readonly")
         self.motor_combo.current(0)
         self.motor_combo.pack(side="left")
-        self.motor_combo.bind("<<ComboboxSelected>>", self._on_motor_change)
-        ttk.Label(top, text="  (选单个电机时, 只有对应那侧的输入框生效)",
+        ttk.Label(top, text="  (发送的数值按此目标路由到 电机0 / 电机1 / 两者)",
                   foreground="#777").pack(side="left")
 
         paned = ttk.Panedwindow(self.tab_control, orient="vertical")
@@ -201,19 +200,12 @@ class HighDofHandGUI:
         self._build_impedance_section(body)
         self._build_traj_section(body)
         self._build_pid_section(body)
-        self._build_raw_section(body)
 
         logf = ttk.LabelFrame(paned, text="发送日志")
         paned.add(logf, weight=1)
         self.log_text = tk.Text(logf, height=7, state="disabled",
                                 background="#101418", foreground="#c8e6c9")
         self.log_text.pack(fill="both", expand=True, padx=4, pady=4)
-
-        # 每电机独立输入框对，用于按“目标电机”启用/禁用
-        self._motor_entry_pairs = [
-            ("pos0", "pos1"), ("vel0", "vel1"), ("tau0", "tau1"), ("iq0", "iq1"),
-            ("imp_o0", "imp_o1"), ("tj_p0", "tj_p1"), ("raw_p0", "raw_p1"),
-        ]
 
     def _build_state_section(self, parent):
         """状态机派发分区：按 STATE_BUTTONS 表铺一排按钮，点击调用 _do_state。"""
@@ -258,40 +250,33 @@ class HighDofHandGUI:
             self.entries[key] = e
 
     def _build_value_sections(self, parent):
-        """位置/速度/力矩/电流四个"逐电机双值 + 发送"分区，表驱动生成，发送走 _do_pair。"""
+        """位置/速度/力矩/电流四个"单值 + 发送"分区，表驱动生成，按目标电机路由 (_do_value)。"""
         specs = [
-            ("位置指令 (Theta_Gear, rad)",
-             [("pos0", "电机0", "0.0"), ("pos1", "电机1", "0.0")], "send_position", "位置"),
-            ("速度指令 (Omega_Gear, rad/s)",
-             [("vel0", "电机0", "0.0"), ("vel1", "电机1", "0.0")], "send_velocity", "速度"),
-            ("力矩指令 (Torque_Gear, N·m)",
-             [("tau0", "电机0", "0.0"), ("tau1", "电机1", "0.0")], "send_torque", "力矩"),
-            ("电流指令 (Iq, A)",
-             [("iq0", "电机0", "0.0"), ("iq1", "电机1", "0.0")], "send_iq", "电流Iq"),
+            ("位置指令 (Theta_Gear, rad)", "pos", "0.0", "send_position", "位置"),
+            ("速度指令 (Omega_Gear, rad/s)", "vel", "0.0", "send_velocity", "速度"),
+            ("力矩指令 (Torque_Gear, N·m)", "tau", "0.0", "send_torque", "力矩"),
+            ("电流指令 (Iq, A)", "iq", "0.0", "send_iq", "电流Iq"),
         ]
-        for title, entry_specs, ctrl_method, short in specs:
+        for title, key, default, ctrl_method, short in specs:
             f = ttk.LabelFrame(parent, text=title)
             f.pack(fill="x", padx=6, pady=5)
             row = ttk.Frame(f)
             row.pack(side="left")
-            self._labeled_entries(row, entry_specs)
-            keys = (entry_specs[0][0], entry_specs[1][0])
+            self._labeled_entries(row, [(key, "数值", default)])
             ttk.Button(f, text="发送", width=10,
-                       command=lambda m=ctrl_method, k=keys, s=short: self._do_pair(m, k, s)
+                       command=lambda m=ctrl_method, k=key, s=short: self._do_value(m, k, s)
                        ).pack(side="left", padx=8)
 
     def _build_impedance_section(self, parent):
-        """阻抗分区：一行发弹簧原点 (逐电机, _do_pair)，一行发刚度/阻尼/惯量 (_do_impedance)。"""
+        """阻抗分区：一行发弹簧原点 (单值, _do_value)，一行发刚度/阻尼/惯量 (_do_impedance)。"""
         f = ttk.LabelFrame(parent, text="阻抗控制")
         f.pack(fill="x", padx=6, pady=5)
 
         r1 = ttk.Frame(f); r1.pack(fill="x")
-        self._labeled_entries(r1, [("imp_o0", "原点电机0(rad)", "0.0"),
-                                   ("imp_o1", "原点电机1(rad)", "0.0")])
+        self._labeled_entries(r1, [("imp_o", "弹簧原点(rad)", "0.0")])
         ttk.Button(r1, text="发送弹簧原点", width=14,
-                   command=lambda: self._do_pair("send_impedance_origin",
-                                                 ("imp_o0", "imp_o1"), "弹簧原点")
-                   ).grid(row=0, column=4, padx=8)
+                   command=lambda: self._do_value("send_impedance_origin", "imp_o", "弹簧原点")
+                   ).grid(row=0, column=2, padx=8)
 
         r2 = ttk.Frame(f); r2.pack(fill="x")
         self._labeled_entries(r2, [("imp_k", "刚度", "0.0"), ("imp_b", "阻尼", "0.0"),
@@ -306,7 +291,7 @@ class HighDofHandGUI:
         r = ttk.Frame(f); r.pack(side="left")
         self._labeled_entries(r, [
             ("tj_v", "vmax(rad/s)", "3.14"), ("tj_a", "amax(rad/s²)", "30.0"),
-            ("tj_p0", "位置电机0(rad)", "0.0"), ("tj_p1", "位置电机1(rad)", "0.0"),
+            ("tj_p", "位置(rad)", "0.0"),
         ])
         ttk.Button(f, text="发送轨迹", width=10, command=self._do_traj).pack(side="left", padx=6)
         ttk.Button(f, text="仅更新位置", width=12,
@@ -330,16 +315,6 @@ class HighDofHandGUI:
             ttk.Button(f, text="发送", width=8,
                        command=lambda m=ctrl_method, kk=keys, lb=label: self._do_pid(m, kk, lb + "PID")
                        ).grid(row=k, column=2, padx=8)
-
-    def _build_raw_section(self, parent):
-        """原始指令分区：mode + 双电机定点参数输入 + 发送 (_do_raw)，用于调试未包装的功能码。"""
-        f = ttk.LabelFrame(parent, text="通用原始指令 (mode + 定点参数, 直接下发不做换算)")
-        f.pack(fill="x", padx=6, pady=5)
-        r = ttk.Frame(f); r.pack(side="left")
-        self._labeled_entries(r, [("raw_mode", "mode", "6"),
-                                  ("raw_p0", "电机0参数", "0"), ("raw_p1", "电机1参数", "0")])
-        ttk.Button(f, text="发送原始指令", width=14,
-                   command=self._do_raw).pack(side="left", padx=8)
 
     # ============================================================ 连接
     def _toggle_serial(self):
@@ -387,13 +362,6 @@ class HighDofHandGUI:
         return (MotorTarget.BOTH, MotorTarget.MOTOR_0,
                 MotorTarget.MOTOR_1)[self.motor_combo.current()]
 
-    def _on_motor_change(self, event=None):
-        """目标电机切换回调：按新目标启用/禁用每对逐电机输入框 (未选中侧灰掉)。"""
-        t = self._motor_target()
-        for k0, k1 in self._motor_entry_pairs:
-            self.entries[k0].config(state="normal" if t.hits_motor0() else "disabled")
-            self.entries[k1].config(state="normal" if t.hits_motor1() else "disabled")
-
     def _ensure_connected(self):
         """每个发送回调开头调用：未连接则弹警告返回 False，阻止后续下发。"""
         if not (self.controller and self.manager and self.manager.is_connected):
@@ -405,24 +373,6 @@ class HighDofHandGUI:
     def _getf(self, key):
         """读取 entries[key] 并转 float (非法输入抛 ValueError，由回调统一捕获提示)。"""
         return float(self.entries[key].get())
-
-    def _geti(self, key):
-        """读取 entries[key] 并转 int (先 float 再取整，兼容 "6.0" 之类写法)。"""
-        return int(float(self.entries[key].get()))
-
-    def _read_pair(self, k0, k1):
-        """按目标电机读取一对浮点；未选中侧返回 None。可能抛 ValueError。"""
-        t = self._motor_target()
-        v0 = self._getf(k0) if t.hits_motor0() else None
-        v1 = self._getf(k1) if t.hits_motor1() else None
-        return v0, v1
-
-    def _read_pair_int(self, k0, k1):
-        """同 _read_pair，但读成 int (用于 RAW 定点参数)。未选中侧返回 None。"""
-        t = self._motor_target()
-        v0 = self._geti(k0) if t.hits_motor0() else None
-        v1 = self._geti(k1) if t.hits_motor1() else None
-        return v0, v1
 
     # ============================================================ 指令回调
     # 各 _do_* 为按钮回调，套路一致：确认已连接 -> (读输入) -> 调 controller -> _show_results。
@@ -440,17 +390,18 @@ class HighDofHandGUI:
         results = self.controller.send_action(self._targets(), method_name, self._motor_target())
         self._show_results(label, results)
 
-    def _do_pair(self, ctrl_method, keys, short):
-        """逐电机双值发送回调：按目标电机读 keys 两个浮点，调 controller.<ctrl_method>。"""
+    def _do_value(self, ctrl_method, key, short):
+        """单值发送回调：读一个浮点，按目标电机调 controller.<ctrl_method>。"""
         if not self._ensure_connected():
             return
         try:
-            v0, v1 = self._read_pair(keys[0], keys[1])
+            v = self._getf(key)
         except ValueError:
             messagebox.showwarning("输入错误", f"{short}: 请输入有效数字")
             return
-        results = getattr(self.controller, ctrl_method)(self._targets(), v0, v1)
-        self._show_results(f"{short} [{v0}, {v1}]", results)
+        results = getattr(self.controller, ctrl_method)(
+            self._targets(), v, self._motor_target())
+        self._show_results(f"{short} [{v}]", results)
 
     def _do_pid(self, ctrl_method, keys, label):
         """PID 发送回调：读 keys 的 kp/ki，调 controller.<ctrl_method>。"""
@@ -484,37 +435,24 @@ class HighDofHandGUI:
             return
         try:
             v, a = self._getf("tj_v"), self._getf("tj_a")
-            p0, p1 = self._read_pair("tj_p0", "tj_p1")
+            p = self._getf("tj_p")
         except ValueError:
             messagebox.showwarning("输入错误", "轨迹参数: 请输入有效数字")
             return
-        results = self.controller.send_trajectory(self._targets(), v, a, p0, p1)
-        self._show_results(f"轨迹 [v={v}, a={a}, p=({p0},{p1})]", results)
+        results = self.controller.send_trajectory(self._targets(), v, a, p, self._motor_target())
+        self._show_results(f"轨迹 [v={v}, a={a}, p={p}]", results)
 
     def _do_traj_pos_only(self):
         """"仅更新位置"回调：只发轨迹目标位置，沿用上一帧 vmax/amax。"""
         if not self._ensure_connected():
             return
         try:
-            p0, p1 = self._read_pair("tj_p0", "tj_p1")
+            p = self._getf("tj_p")
         except ValueError:
             messagebox.showwarning("输入错误", "轨迹位置: 请输入有效数字")
             return
-        results = self.controller.send_trajectory_pos(self._targets(), p0, p1)
-        self._show_results(f"轨迹位置 [{p0}, {p1}]", results)
-
-    def _do_raw(self):
-        """原始指令回调：读 mode 与逐电机定点参数 (int)，不做换算直接下发。"""
-        if not self._ensure_connected():
-            return
-        try:
-            mode = self._geti("raw_mode")
-            p0, p1 = self._read_pair_int("raw_p0", "raw_p1")
-        except ValueError:
-            messagebox.showwarning("输入错误", "原始指令: 请输入有效整数")
-            return
-        results = self.controller.send_raw(self._targets(), mode, p0, p1)
-        self._show_results(f"RAW mode={mode} [{p0}, {p1}]", results)
+        results = self.controller.send_trajectory_pos(self._targets(), p, self._motor_target())
+        self._show_results(f"轨迹位置 [{p}]", results)
 
     # ============================================================ 日志
     def _show_results(self, desc, results):

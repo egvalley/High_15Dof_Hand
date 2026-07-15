@@ -45,30 +45,30 @@ class HandController:
                 results.append(CommandResult(idx, False, str(e)))
         return results
 
-    # ------------------------------------------ 类型 A：逐电机两个数值 (v0/v1，None=该电机不发)
-    def send_position(self, mcu_indices, pos0, pos1):
-        """向选中 MCU 下发位置指令 (输出轴 rad)。pos0->电机0, pos1->电机1。返回 list[CommandResult]。"""
-        return self._run(mcu_indices, lambda c, i: c.send_position(i, pos0, pos1))
+    # ------------------------------------ 类型 A：单值 + 目标电机 (motor 选 M0/M1/两者)
+    def send_position(self, mcu_indices, pos, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发位置指令 (输出轴 rad) 到目标电机。返回 list[CommandResult]。"""
+        return self._run(mcu_indices, lambda c, i: c.send_position(i, pos, motor))
 
-    def send_velocity(self, mcu_indices, vel0, vel1):
-        """向选中 MCU 下发速度指令 (输出轴 rad/s)。vel0->电机0, vel1->电机1。"""
-        return self._run(mcu_indices, lambda c, i: c.send_velocity(i, vel0, vel1))
+    def send_velocity(self, mcu_indices, vel, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发速度指令 (输出轴 rad/s) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_velocity(i, vel, motor))
 
-    def send_torque(self, mcu_indices, tau0, tau1):
-        """向选中 MCU 下发力矩指令 (输出轴 N·m)。tau0->电机0, tau1->电机1。"""
-        return self._run(mcu_indices, lambda c, i: c.send_torque(i, tau0, tau1))
+    def send_torque(self, mcu_indices, tau, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发力矩指令 (输出轴 N·m) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_torque(i, tau, motor))
 
-    def send_iq(self, mcu_indices, iq0, iq1):
-        """向选中 MCU 下发 q 轴电流指令 (A)。iq0->电机0, iq1->电机1。"""
-        return self._run(mcu_indices, lambda c, i: c.send_iq(i, iq0, iq1))
+    def send_iq(self, mcu_indices, iq, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发 q 轴电流指令 (A) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_iq(i, iq, motor))
 
-    def send_impedance_origin(self, mcu_indices, o0, o1):
-        """向选中 MCU 下发阻抗弹簧原点 (输出轴 rad)。o0->电机0, o1->电机1。"""
-        return self._run(mcu_indices, lambda c, i: c.send_impedance_origin(i, o0, o1))
+    def send_impedance_origin(self, mcu_indices, origin, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发阻抗弹簧原点 (输出轴 rad) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_impedance_origin(i, origin, motor))
 
-    def send_trajectory_pos(self, mcu_indices, pos0, pos1):
-        """只更新轨迹目标位置 (输出轴 rad)，不重设 vmax/amax。pos0->电机0, pos1->电机1。"""
-        return self._run(mcu_indices, lambda c, i: c.send_trajectory_pos(i, pos0, pos1))
+    def send_trajectory_pos(self, mcu_indices, pos, motor=MotorTarget.BOTH):
+        """只更新轨迹目标位置 (输出轴 rad)，不重设 vmax/amax。发到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_trajectory_pos(i, pos, motor))
 
     # ------------------------------------- 类型 B：共享参数 + 目标电机 (motor 选 M0/M1/两者)
     def send_state(self, mcu_indices, state, motor=MotorTarget.BOTH):
@@ -102,17 +102,8 @@ class HandController:
         return self._run(mcu_indices,
                          lambda c, i: getattr(c, action_name)(i, motor))
 
-    # ------------------------------------------------- 类型 C：一帧内设定 vmax/amax + 逐电机位置
-    def send_trajectory(self, mcu_indices, vel_max, acl_max, pos0, pos1):
-        """下发完整轨迹指令：速度上限/加速度上限 + 逐电机目标位置 (pos0->电机0, pos1->电机1)。"""
+    # ------------------------------------------------- 类型 C：一帧内设定 vmax/amax + 目标位置
+    def send_trajectory(self, mcu_indices, vel_max, acl_max, pos, motor=MotorTarget.BOTH):
+        """下发完整轨迹指令：速度上限/加速度上限 + 目标位置，发到目标电机。"""
         return self._run(mcu_indices,
-                         lambda c, i: c.send_trajectory(i, vel_max, acl_max, pos0, pos1))
-
-    # ---------------------------------------------------------------- RAW 透传
-    def send_raw(self, mcu_indices, mode, p0, p1):
-        """
-        直接下发原始 (mode, 定点参数)，不做物理量换算。
-        p0->电机0 (前半段), p1->电机1 (后半段)；None 表示该电机不发。
-        用于调试固件里尚未包装成高层方法的功能码。
-        """
-        return self._run(mcu_indices, lambda c, i: c.send_raw_command(i, mode, p0, p1))
+                         lambda c, i: c.send_trajectory(i, vel_max, acl_max, pos, motor))

@@ -78,13 +78,7 @@ class SerialCommander:
         return {"both": MotorTarget.BOTH, 0: MotorTarget.MOTOR_0,
                 1: MotorTarget.MOTOR_1}[motor]
 
-    # ---------------------------------------------------------------- 两种分组方式
-    def _paired(self, mcu, func, v0, v1):
-        """逐电机取值：v0->电机0, v1->电机1；None 表示该电机不发 (由编码器补 NOP)。"""
-        m0 = [self._cmd(func, v0)] if v0 is not None else []
-        m1 = [self._cmd(func, v1)] if v1 is not None else []
-        return self._send(mcu, m0, m1)
-
+    # ---------------------------------------------------------------- 按目标电机分组
     def _targeted(self, mcu, cmds, motor):
         """共享的一组命令 cmds，按目标电机发给电机0 / 电机1 / 两者。"""
         t = self._as_target(motor)
@@ -92,28 +86,28 @@ class SerialCommander:
         m1 = list(cmds) if t.hits_motor1() else []
         return self._send(mcu, m0, m1)
 
-    # ============================================================ 基本控制 (逐电机取值)
-    # 以下 send_* 均为逐电机取值：v0->电机0, v1->电机1，None 表示该电机不发。
+    # ============================================================ 基本控制 (单值 + 目标电机)
+    # 以下 send_* 把同一数值按 motor (MotorTarget/'both'/0/1) 发给 电机0 / 电机1 / 两者。
     # mcu 可为 index 0~7 或 ID 0xB0~0xB7；返回 bool (是否成功写入)。
-    def send_position(self, mcu, pos0=None, pos1=None):
-        """下发位置指令 θ (输出轴 rad)。"""
-        return self._paired(mcu, MotorFunc.THETA_GEAR, pos0, pos1)
+    def send_position(self, mcu, pos, motor=MotorTarget.BOTH):
+        """下发位置指令 θ (输出轴 rad) 到目标电机。"""
+        return self._targeted(mcu, [self._cmd(MotorFunc.THETA_GEAR, pos)], motor)
 
-    def send_velocity(self, mcu, vel0=None, vel1=None):
-        """下发速度指令 ω (输出轴 rad/s)。"""
-        return self._paired(mcu, MotorFunc.OMEGA_GEAR, vel0, vel1)
+    def send_velocity(self, mcu, vel, motor=MotorTarget.BOTH):
+        """下发速度指令 ω (输出轴 rad/s) 到目标电机。"""
+        return self._targeted(mcu, [self._cmd(MotorFunc.OMEGA_GEAR, vel)], motor)
 
-    def send_torque(self, mcu, tau0=None, tau1=None):
-        """下发力矩指令 τ (输出轴 N·m)。"""
-        return self._paired(mcu, MotorFunc.TORQUE_GEAR, tau0, tau1)
+    def send_torque(self, mcu, tau, motor=MotorTarget.BOTH):
+        """下发力矩指令 τ (输出轴 N·m) 到目标电机。"""
+        return self._targeted(mcu, [self._cmd(MotorFunc.TORQUE_GEAR, tau)], motor)
 
-    def send_iq(self, mcu, iq0=None, iq1=None):
-        """下发 q 轴电流指令 iq (A)。"""
-        return self._paired(mcu, MotorFunc.IQ, iq0, iq1)
+    def send_iq(self, mcu, iq, motor=MotorTarget.BOTH):
+        """下发 q 轴电流指令 iq (A) 到目标电机。"""
+        return self._targeted(mcu, [self._cmd(MotorFunc.IQ, iq)], motor)
 
-    def send_impedance_origin(self, mcu, origin0=None, origin1=None):
-        """下发阻抗弹簧原点 (输出轴 rad)。"""
-        return self._paired(mcu, MotorFunc.IMPEDANCE_SPRING_ORIGIN, origin0, origin1)
+    def send_impedance_origin(self, mcu, origin, motor=MotorTarget.BOTH):
+        """下发阻抗弹簧原点 (输出轴 rad) 到目标电机。"""
+        return self._targeted(mcu, [self._cmd(MotorFunc.IMPEDANCE_SPRING_ORIGIN, origin)], motor)
 
     # ============================================================ 共享参数 + 目标电机
     # 以下方法把同一组参数按 motor (MotorTarget/'both'/0/1) 发给 电机0 / 电机1 / 两者。
@@ -150,19 +144,16 @@ class SerialCommander:
         return self._targeted(mcu, [cmd], motor)
 
     # ============================================================ 轨迹
-    def send_trajectory(self, mcu, vel_max, acl_max, pos0=None, pos1=None):
-        """一次性设定轨迹的 vmax/amax 与逐电机目标位置。"""
-        def group(pos):
-            return [self._cmd(MotorFunc.TRAJ_VEL_MAX, vel_max),
-                    self._cmd(MotorFunc.TRAJ_ACL_MAX, acl_max),
-                    self._cmd(MotorFunc.TRAJ_POS_CMD, pos)]
-        m0 = group(pos0) if pos0 is not None else []
-        m1 = group(pos1) if pos1 is not None else []
-        return self._send(mcu, m0, m1)
+    def send_trajectory(self, mcu, vel_max, acl_max, pos, motor=MotorTarget.BOTH):
+        """一次性设定轨迹的 vmax/amax 与目标位置，下发到目标电机。"""
+        cmds = [self._cmd(MotorFunc.TRAJ_VEL_MAX, vel_max),
+                self._cmd(MotorFunc.TRAJ_ACL_MAX, acl_max),
+                self._cmd(MotorFunc.TRAJ_POS_CMD, pos)]
+        return self._targeted(mcu, cmds, motor)
 
-    def send_trajectory_pos(self, mcu, pos0=None, pos1=None):
-        """只更新轨迹目标位置 (输出轴 rad)，沿用上一帧的 vmax/amax。逐电机取值。"""
-        return self._paired(mcu, MotorFunc.TRAJ_POS_CMD, pos0, pos1)
+    def send_trajectory_pos(self, mcu, pos, motor=MotorTarget.BOTH):
+        """只更新轨迹目标位置 (输出轴 rad)，沿用上一帧的 vmax/amax。发到目标电机。"""
+        return self._targeted(mcu, [self._cmd(MotorFunc.TRAJ_POS_CMD, pos)], motor)
 
     # ============================================================ 设备级动作 (无参数)
     def _action(self, mcu, func, motor):
@@ -192,13 +183,3 @@ class SerialCommander:
     def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
         """清除 Flash 错误标志。"""
         return self._action(mcu, MotorFunc.CLEAR_FLASH_ERROR, motor)
-
-    # ============================================================ RAW 透传
-    def send_raw_command(self, mcu, mode, param0=None, param1=None):
-        """
-        直接下发指定 mode 与定点参数，不做换算。
-        param0 -> 电机0 (前半段)，param1 -> 电机1 (后半段)；None 表示该电机不发。
-        """
-        m0 = [MotorCommand(int(mode), int(param0))] if param0 is not None else []
-        m1 = [MotorCommand(int(mode), int(param1))] if param1 is not None else []
-        return self._send(mcu, m0, m1)
