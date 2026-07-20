@@ -87,7 +87,7 @@ class SerialCommander:
         return self._targeted(mcu, [self._cmd(MotorFunc.OMEGA_GEAR, vel)], motor)
 
     def send_torque(self, mcu, tau, motor=MotorTarget.BOTH):
-        """下发力矩指令 τ (输出轴 N·m) 到目标电机。"""
+        """下发力矩指令 τ (输出轴 mN·m) 到目标电机。"""
         return self._targeted(mcu, [self._cmd(MotorFunc.TORQUE_GEAR, tau)], motor)
 
     def send_iq(self, mcu, iq, motor=MotorTarget.BOTH):
@@ -163,9 +163,25 @@ class SerialCommander:
         """轨迹模块反初始化。"""
         return self._action(mcu, MotorFunc.TRAJ_DEINIT, motor)
 
+    # ============================================================ 回零 (Homing)
+    # 回零参数：前向力矩 (输出轴 mN·m) 与反向位置 (输出轴 rad)。
+    # 三种用法：更新参数并回零 / 仅更新参数 / 仅触发回零，与轨迹三方式对称。
     def send_homing(self, mcu, motor=MotorTarget.BOTH):
-        """触发回零。"""
-        return self._action(mcu, MotorFunc.HOMING, motor)
+        """仅触发回零 (不改参数)，沿用上一帧的前向力矩/反向位置。"""
+        return self._action(mcu, MotorFunc.HOMING_INIT, motor)
+
+    def send_homing_params(self, mcu, forward_torque, backward_pos, motor=MotorTarget.BOTH):
+        """只更新回零参数 (前向力矩/反向位置)，不触发回零。发到目标电机。"""
+        cmds = [self._cmd(MotorFunc.HOMING_FORWARD_TORQUE, forward_torque),
+                self._cmd(MotorFunc.HOMING_BACKWARD_POSITION, backward_pos)]
+        return self._targeted(mcu, cmds, motor)
+
+    def send_homing_full(self, mcu, forward_torque, backward_pos, motor=MotorTarget.BOTH):
+        """一帧内更新回零参数并触发回零 (先设参数后 init，顺序不可颠倒)。发到目标电机。"""
+        cmds = [self._cmd(MotorFunc.HOMING_FORWARD_TORQUE, forward_torque),
+                self._cmd(MotorFunc.HOMING_BACKWARD_POSITION, backward_pos),
+                MotorCommand(int(MotorFunc.HOMING_INIT), 0)]
+        return self._targeted(mcu, cmds, motor)
 
     def send_flashing_params(self, mcu, motor=MotorTarget.BOTH):
         """把当前参数刷写进 Flash。"""

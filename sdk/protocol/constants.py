@@ -12,7 +12,7 @@
 
 Control_Mode 取值 = router.h RouterControlMode 枚举 (见 MotorFunc)，固件已实现：
   位置 / 速度 / 力矩 · Iq / Id · 阻抗(弹簧/阻尼/惯量/原点) · 各环 PID ·
-  状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零 · 刷参 · 清Flash。
+  状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零(init/前向力矩/反向位置) · 刷参 · 清Flash。
 """
 
 from enum import IntEnum
@@ -126,7 +126,7 @@ class MotorFunc(IntEnum):
     # —— 基本控制 (输出轴单位) ——
     THETA_GEAR              = (   6,  100.0)   # 位置 θ_m = param·GEAR/100  ⇒ θ_out=param/100
     OMEGA_GEAR              = (   7,  100.0)   # 速度 ω_m = param·GEAR/100  ⇒ ω_out=param/100
-    TORQUE_GEAR             = (   8,  100.0)   # 力矩 τ_m = param/GEAR/100  ⇒ τ_out=param/100
+    TORQUE_GEAR             = (   8,    1.0)   # 力矩(mN·m) τ_m=param/GEAR ⇒ τ_out=param，param=τ_out(mN·m)
     IQ                      = (   9, 1000.0)   # q 轴电流 iq = param·0.001
     ID                      = (  10, 1000.0)   # d 轴电流 id = param·0.001
     # —— 阻抗 ——
@@ -149,10 +149,13 @@ class MotorFunc(IntEnum):
     TRAJ_VEL_MAX            = (  84,  100.0)   # param·GEAR/100 ⇒ 输出轴 param/100
     TRAJ_ACL_MAX            = (  85,  100.0)
     TRAJ_POS_CMD            = (  86,  100.0)
+    # —— 回零 (Homing，输出轴单位) ——
+    HOMING_INIT              = ( 101,    1.0)   # 触发回零 (无参数)
+    HOMING_FORWARD_TORQUE    = ( 102,    1.0)   # 前向力矩(mN·m) 换算同 TORQUE_GEAR，param=τ_out(mN·m)
+    HOMING_BACKWARD_POSITION = ( 103,  100.0)   # 反向位置 θ_m = param·GEAR/100 ⇒ 输出轴 param/100
     # —— 设备级 (无参数) ——
-    HOMING                  = ( 102,    1.0)
-    FLASHING_PARAMS         = ( 103,    1.0)
-    CLEAR_FLASH_ERROR       = ( 122,    1.0)
+    FLASHING_PARAMS          = ( 121,    1.0)
+    CLEAR_FLASH_ERROR        = ( 122,    1.0)
 
     @classmethod
     def scale_of(cls, func):

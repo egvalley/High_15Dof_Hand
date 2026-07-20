@@ -54,7 +54,7 @@ class HandController:
         return self._run(mcu_indices, lambda c, i: c.send_velocity(i, vel, motor))
 
     def send_torque(self, mcu_indices, tau, motor=MotorTarget.BOTH):
-        """向选中 MCU 下发力矩指令 (输出轴 N·m) 到目标电机。"""
+        """向选中 MCU 下发力矩指令 (输出轴 mN·m) 到目标电机。"""
         return self._run(mcu_indices, lambda c, i: c.send_torque(i, tau, motor))
 
     def send_iq(self, mcu_indices, iq, motor=MotorTarget.BOTH):
@@ -96,6 +96,17 @@ class HandController:
         """
         return self._run(mcu_indices,
                          lambda c, i: getattr(c, action_name)(i, motor))
+
+    # ------------------------------------------------- 回零 (Homing)
+    def send_homing_params(self, mcu_indices, forward_torque, backward_pos, motor=MotorTarget.BOTH):
+        """只更新回零参数 (前向力矩/反向位置)，不触发回零。发到目标电机。"""
+        return self._run(mcu_indices,
+                         lambda c, i: c.send_homing_params(i, forward_torque, backward_pos, motor))
+
+    def send_homing_full(self, mcu_indices, forward_torque, backward_pos, motor=MotorTarget.BOTH):
+        """一帧内更新回零参数并触发回零。发到目标电机。"""
+        return self._run(mcu_indices,
+                         lambda c, i: c.send_homing_full(i, forward_torque, backward_pos, motor))
 
     # ------------------------------------------------- 类型 C：一帧内设定 vmax/amax + 目标位置
     def send_trajectory(self, mcu_indices, vel_max, acl_max, pos, motor=MotorTarget.BOTH):

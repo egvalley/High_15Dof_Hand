@@ -135,7 +135,7 @@ class HighDofHandGUI:
         tree.heading("theta", text="θ (rad)")
         tree.heading("omega", text="ω (rad/s)")
         tree.heading("acl", text="a (rad/s²)")
-        tree.heading("torque", text="τ (N·m)")
+        tree.heading("torque", text="τ (mN·m)")
         tree.heading("meta", text="链路 / 丢包")
 
         tree.column("#0", width=180, anchor="w")
@@ -199,6 +199,7 @@ class HighDofHandGUI:
         self._build_value_sections(body)
         self._build_impedance_section(body)
         self._build_traj_section(body)
+        self._build_homing_section(body)
         self._build_pid_section(body)
 
         logf = ttk.LabelFrame(paned, text="发送日志")
@@ -223,7 +224,6 @@ class HighDofHandGUI:
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
         actions = [
-            ("回零 Homing", "send_homing"),
             ("刷写参数", "send_flashing_params"),
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
@@ -253,7 +253,7 @@ class HighDofHandGUI:
         specs = [
             ("位置指令 (Theta_Gear, rad)", "pos", "0.0", "send_position", "位置"),
             ("速度指令 (Omega_Gear, rad/s)", "vel", "0.0", "send_velocity", "速度"),
-            ("力矩指令 (Torque_Gear, N·m)", "tau", "0.0", "send_torque", "力矩"),
+            ("力矩指令 (Torque_Gear, mN·m)", "tau", "0.0", "send_torque", "力矩"),
             ("电流指令 (Iq, A)", "iq", "0.0", "send_iq", "电流Iq"),
         ]
         for title, key, default, ctrl_method, short in specs:
@@ -297,6 +297,18 @@ class HighDofHandGUI:
                    command=self._do_traj_pos_only).pack(side="left", padx=2)
         ttk.Button(f, text="仅更新限幅", width=12,
                    command=self._do_traj_limits_only).pack(side="left", padx=2)
+
+    def _build_homing_section(self, parent):
+        """回零分区：前向力矩/反向位置输入 + "更新参数并回零"/"仅更新参数"/"仅回零" 三按钮。"""
+        f = ttk.LabelFrame(parent, text="回零 Homing (前向力矩 / 反向位置)")
+        f.pack(fill="x", padx=6, pady=5)
+        r = ttk.Frame(f); r.pack(side="left")
+        self._labeled_entries(r, [
+            ("hm_tau", "前向力矩(mN·m)", "0.0"), ("hm_pos", "反向位置(rad)", "0.0"),
+        ])
+        ttk.Button(f, text="更新参数并回零", width=14, command=self._do_homing_full).pack(side="left", padx=6)
+        ttk.Button(f, text="仅更新参数", width=12, command=self._do_homing_params).pack(side="left", padx=2)
+        ttk.Button(f, text="仅回零", width=10, command=self._do_homing).pack(side="left", padx=2)
 
     def _build_pid_section(self, parent):
         """PID 分区：位置/速度/电流环各一行 (Kp/Ki + 发送)，表驱动，发送走 _do_pid。"""
@@ -465,6 +477,37 @@ class HighDofHandGUI:
             return
         results = self.controller.send_trajectory_limits(self._targets(), v, a, self._motor_target())
         self._show_results(f"轨迹限幅 [v={v}, a={a}]", results)
+
+    def _do_homing_full(self):
+        """"更新参数并回零"回调：一帧内下发前向力矩/反向位置并触发回零。"""
+        if not self._ensure_connected():
+            return
+        try:
+            tau, pos = self._getf("hm_tau"), self._getf("hm_pos")
+        except ValueError:
+            messagebox.showwarning("输入错误", "回零参数: 请输入有效数字")
+            return
+        results = self.controller.send_homing_full(self._targets(), tau, pos, self._motor_target())
+        self._show_results(f"回零(参数+执行) [τ={tau}, pos={pos}]", results)
+
+    def _do_homing_params(self):
+        """"仅更新参数"回调：只发前向力矩/反向位置，不触发回零。"""
+        if not self._ensure_connected():
+            return
+        try:
+            tau, pos = self._getf("hm_tau"), self._getf("hm_pos")
+        except ValueError:
+            messagebox.showwarning("输入错误", "回零参数: 请输入有效数字")
+            return
+        results = self.controller.send_homing_params(self._targets(), tau, pos, self._motor_target())
+        self._show_results(f"回零参数 [τ={tau}, pos={pos}]", results)
+
+    def _do_homing(self):
+        """"仅回零"回调：只触发回零，沿用上一帧参数。"""
+        if not self._ensure_connected():
+            return
+        results = self.controller.send_action(self._targets(), "send_homing", self._motor_target())
+        self._show_results("回零(执行)", results)
 
     # ============================================================ 日志
     def _show_results(self, desc, results):
