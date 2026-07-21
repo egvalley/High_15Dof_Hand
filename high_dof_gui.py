@@ -196,6 +196,7 @@ class HighDofHandGUI:
 
         self._build_state_section(body)
         self._build_action_section(body)
+        self._build_flashing_section(body)
         self._build_value_sections(body)
         self._build_impedance_section(body)
         self._build_traj_section(body)
@@ -224,7 +225,6 @@ class HighDofHandGUI:
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
         actions = [
-            ("刷写参数", "send_flashing_params"),
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
             ("清除Flash错误", "send_clear_flash_error"),
@@ -235,6 +235,16 @@ class HighDofHandGUI:
             b.grid(row=k // 3, column=k % 3, padx=4, pady=4, sticky="ew")
         for c in range(3):
             f.columnconfigure(c, weight=1)
+
+    def _build_flashing_section(self, parent):
+        """刷写参数分区：输入配置序号 config_index，按其重置控制参数为预设并刷入 Flash。"""
+        f = ttk.LabelFrame(parent, text="刷写参数 (FlashingParams：按配置序号重置控制参数并刷入 Flash)")
+        f.pack(fill="x", padx=6, pady=5)
+        row = ttk.Frame(f)
+        row.pack(side="left")
+        self._labeled_entries(row, [("flash_cfg", "配置序号", "0")])
+        ttk.Button(f, text="刷写参数", width=12,
+                   command=self._do_flashing_params).pack(side="left", padx=8)
 
     def _labeled_entries(self, parent, specs):
         """
@@ -401,6 +411,19 @@ class HighDofHandGUI:
             return
         results = self.controller.send_action(self._targets(), method_name, self._motor_target())
         self._show_results(label, results)
+
+    def _do_flashing_params(self):
+        """刷写参数回调：读配置序号 (整数)，按目标电机重置控制参数为预设并刷入 Flash。"""
+        if not self._ensure_connected():
+            return
+        try:
+            cfg = int(self.entries["flash_cfg"].get())
+        except ValueError:
+            messagebox.showwarning("输入错误", "配置序号: 请输入有效整数")
+            return
+        results = self.controller.send_flashing_params(
+            self._targets(), cfg, self._motor_target())
+        self._show_results(f"刷写参数 [cfg={cfg}]", results)
 
     def _do_value(self, ctrl_method, key, short):
         """单值发送回调：读一个浮点，按目标电机调 controller.<ctrl_method>。"""

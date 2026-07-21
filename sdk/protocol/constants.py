@@ -153,9 +153,9 @@ class MotorFunc(IntEnum):
     HOMING_INIT              = ( 101,    1.0)   # 触发回零 (无参数)
     HOMING_FORWARD_TORQUE    = ( 102,    1.0)   # 前向力矩(mN·m) 换算同 TORQUE_GEAR，param=τ_out(mN·m)
     HOMING_BACKWARD_POSITION = ( 103,  100.0)   # 反向位置 θ_m = param·GEAR/100 ⇒ 输出轴 param/100
-    # —— 设备级 (无参数) ——
-    FLASHING_PARAMS          = ( 121,    1.0)
-    CLEAR_FLASH_ERROR        = ( 122,    1.0)
+    # —— 设备级 ——
+    FLASHING_PARAMS          = ( 121,    1.0)   # 按配置序号重置控制参数为预设并刷入 Flash；param = config_index (见 ResetControlParams，0/1)
+    CLEAR_FLASH_ERROR        = ( 122,    1.0)   # 清除 Flash 错误 (无参数)
 
     @classmethod
     def scale_of(cls, func):

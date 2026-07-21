@@ -183,9 +183,9 @@ class SerialCommander:
                 MotorCommand(int(MotorFunc.HOMING_INIT), 0)]
         return self._targeted(mcu, cmds, motor)
 
-    def send_flashing_params(self, mcu, motor=MotorTarget.BOTH):
-        """把当前参数刷写进 Flash。"""
-        return self._action(mcu, MotorFunc.FLASHING_PARAMS, motor)
+    def send_flashing_params(self, mcu, config_index=0, motor=MotorTarget.BOTH):
+        """按配置序号 config_index 重置控制参数为预设并刷入 Flash (对应固件 ResetControlParams，config_index=0/1)。"""
+        return self._targeted(mcu, [MotorCommand(int(MotorFunc.FLASHING_PARAMS), int(config_index))], motor)
 
     def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
         """清除 Flash 错误标志。"""

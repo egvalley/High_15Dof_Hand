@@ -90,12 +90,17 @@ class HandController:
     def send_action(self, mcu_indices, action_name, motor=MotorTarget.BOTH):
         """
         下发无参数设备级动作。action_name 为 commander 上的方法名，
-        如 'send_homing' / 'send_flashing_params' / 'send_traj_init' / 'send_traj_deinit'
+        如 'send_homing' / 'send_traj_init' / 'send_traj_deinit'
         / 'send_clear_flash_error'。
         用 getattr 分派，便于 GUI 用 (按钮文案, 方法名) 表驱动。
         """
         return self._run(mcu_indices,
                          lambda c, i: getattr(c, action_name)(i, motor))
+
+    def send_flashing_params(self, mcu_indices, config_index=0, motor=MotorTarget.BOTH):
+        """按配置序号重置控制参数为预设并刷入 Flash (对应固件 ResetControlParams)，发到目标电机。"""
+        return self._run(mcu_indices,
+                         lambda c, i: c.send_flashing_params(i, config_index, motor))
 
     # ------------------------------------------------- 回零 (Homing)
     def send_homing_params(self, mcu_indices, forward_torque, backward_pos, motor=MotorTarget.BOTH):
