@@ -227,6 +227,8 @@ class HighDofHandGUI:
         actions = [
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
+            ("清除内环错误", "send_clear_inner_error"),
+            ("清除外环错误", "send_clear_outer_error"),
             ("清除Flash错误", "send_clear_flash_error"),
         ]
         for k, (label, fn) in enumerate(actions):

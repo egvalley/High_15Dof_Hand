@@ -12,7 +12,8 @@
 
 Control_Mode 取值 = router.h RouterControlMode 枚举 (见 MotorFunc)，固件已实现：
   位置 / 速度 / 力矩 · Iq / Id · 阻抗(弹簧/阻尼/惯量/原点) · 各环 PID ·
-  状态派发 · 轨迹(init/deinit/vmax/amax/pos) · 回零(init/前向力矩/反向位置) · 刷参 · 清Flash。
+  状态派发 · 清内环错误 · 清外环错误 · 轨迹(init/deinit/vmax/amax/pos) ·
+  回零(init/前向力矩/反向位置) · 刷参 · 清Flash。
 """
 
 from enum import IntEnum
@@ -141,6 +142,9 @@ class MotorFunc(IntEnum):
     VEL_PID_KI              = (  55, 1000.0)
     POS_PID_KP              = (  56,    1.0)   # param (无缩放)
     POS_PID_KI              = (  57,    1.0)
+    # —— 错误清除 (无参数，param 被固件忽略) ——
+    CLEAR_INNER_ERROR       = (  70,    1.0)   # 清内环错误 (MotorInnerCtrl_ServiceClearError)，由固件决定是否从内环错误态恢复
+    CLEAR_OUTER_ERROR       = (  71,    1.0)   # 清外环错误 (MotorOuterCtrl_ServiceClearError)，由固件决定是否从外环错误态恢复
     # —— 状态机 ——
     DISPATCH_STATE          = (  72,    1.0)   # 状态机派发；param = 状态码 (见 MotorState)
     # —— 轨迹 (输出轴单位) ——
@@ -174,22 +178,35 @@ class MotorState:
     电机状态机 —— 逐条对应固件 MotorStateType 枚举 (名称/数值已核对一致)。
     用于：① 解析 Tx 反馈里的 state 曲线；② 作为 DISPATCH_STATE 命令的参数(状态码)。
     反馈解析与命令派发共用同一套：固件 DispatchStateMachine 收的即此枚举。
+
+    ★ 错误系统已重构：旧的各阶段错误态 (StartupError=1 / DbgCurrentError=21 /
+      DbgVelocityError=41 / DbgPositionError=61 / AppError=81 / InnerOuterMismatch=255)
+      与 StartupReady=2 / StartupParamsInit=3 已移除；StartupReady 现为 3；
+      内/外环错误统一为 150~154 的独立错误码 (见下)。清错用 CLEAR_INNER_ERROR(70) /
+      CLEAR_OUTER_ERROR(71)。
     """
 
     CODES = {
-        "StartupError": 1, "StartupReady": 2, "StartupParamsInit": 3,
+        # —— 启动 ——
+        "StartupReady": 3,
         "StartupCurrentCalib": 4, "StartupPhaseDiag": 5, "StartupElecAngleDrag": 6,
         "StartupElecAngleDone": 7, "StartupDisable": 20,
-        "DbgCurrentError": 21, "DbgCurrentAlphaBeta": 22, "DbgCurrentOpenLoop": 23,
+        # —— 电流环调试 ——
+        "DbgCurrentAlphaBeta": 22, "DbgCurrentOpenLoop": 23,
         "DbgCurrentOnlyIdClosedLoop": 24, "DbgCurrentClosedLoop": 25,
         "DbgCurrentClosedLoop_IqSysIden": 26, "DbgCurrentClosedLoop_IdSysIden": 27,
         "DbgCurrentOpenLoop_UqSysIden": 28, "DbgCurrentOpenLoop_UdSysIden": 29,
         "DbgCurrentDisable": 40,
-        "DbgVelocityError": 41, "DbgVelocityClosedLoop_SysIden": 42, "DbgVelocityDisable": 60,
-        "DbgPositionError": 61, "DbgPositionClosedLoop_SysIden": 62, "DbgPositionDisable": 80,
-        "AppError": 81, "AppCurrentCtrl": 82, "AppTorqueCtrl": 83, "AppImpedanceCtrl": 84,
+        # —— 速度环 / 位置环调试 ——
+        "DbgVelocityClosedLoop_SysIden": 42, "DbgVelocityDisable": 60,
+        "DbgPositionClosedLoop_SysIden": 62, "DbgPositionDisable": 80,
+        # —— 应用 ——
+        "AppCurrentCtrl": 82, "AppTorqueCtrl": 83, "AppImpedanceCtrl": 84,
         "AppVelocityCtrl": 85, "AppPositionCtrl": 86, "AppDisable": 100,
-        "InnerOuterMismatch": 255,
+        # —— 错误 (内/外环，150+) ——
+        "InnerEncoderReadError": 150, "InnerCurrentReadError": 151,
+        "InnerParamLoadError": 152, "OuterParamLoadError": 153,
+        "InnerOuterMismatchError": 154,
     }
     NAMES = {v: k for k, v in CODES.items()}
 
