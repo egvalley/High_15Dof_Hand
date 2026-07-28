@@ -182,8 +182,8 @@ class MotorState:
     ★ 错误系统已重构：旧的各阶段错误态 (StartupError=1 / DbgCurrentError=21 /
       DbgVelocityError=41 / DbgPositionError=61 / AppError=81 / InnerOuterMismatch=255)
       与 StartupReady=2 / StartupParamsInit=3 已移除；StartupReady 现为 3；
-      内/外环错误统一为 150~154 的独立错误码 (见下)。清错用 CLEAR_INNER_ERROR(70) /
-      CLEAR_OUTER_ERROR(71)。
+      内环错误 150~152、外环错误 153~155 为独立错误码，内外环不一致错误为 165 (见下)。
+      清错用 CLEAR_INNER_ERROR(70) / CLEAR_OUTER_ERROR(71)。
     """
 
     CODES = {
@@ -206,7 +206,8 @@ class MotorState:
         # —— 错误 (内/外环，150+) ——
         "InnerEncoderReadError": 150, "InnerCurrentReadError": 151,
         "InnerParamLoadError": 152, "OuterParamLoadError": 153,
-        "InnerOuterMismatchError": 154,
+        "OuterThetaeCalibSaveError": 154, "OuterCurrentCalibSaveError": 155,
+        "InnerOuterMismatchError": 165,
     }
     NAMES = {v: k for k, v in CODES.items()}
 

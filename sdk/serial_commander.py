@@ -192,7 +192,7 @@ class SerialCommander:
         return self._action(mcu, MotorFunc.CLEAR_FLASH_ERROR, motor)
 
     # ============================================================ 错误清除 (无参数)
-    # 内/外环错误态 (状态码 150~154) 下，由固件决定是否据此从错误态恢复。
+    # 内/外环错误态 (状态码 150~155、165) 下，由固件决定是否据此从错误态恢复。
     def send_clear_inner_error(self, mcu, motor=MotorTarget.BOTH):
         """清除内环错误 (ClearInnerError)，用于从内环错误态恢复。发到目标电机。"""
         return self._action(mcu, MotorFunc.CLEAR_INNER_ERROR, motor)
