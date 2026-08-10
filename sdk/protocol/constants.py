@@ -1,19 +1,5 @@
 """
 协议常量唯一定义源 (Single Source of Truth)。
-
-★ 本版对照 router.h (RouterControlMode / RouterMCUObject 枚举) + router.c
-  (DeviceRouter_RxPayloadHandler 的换算) 校正。
-
-电机区分方式 (见 router.c 的两段 for 循环)：一帧的命令列表按【前/后半段位置】分给两个电机——
-    前半段 i <  command_num/2  -> 电机0 (固件 M1)
-    后半段 i >= command_num/2  -> 电机1 (固件 M2)
-  两段 switch 完全相同、共用【同一套 mode 值】；因此 mode 只表示"功能"，与电机无关。
-  ⇒ 编码时两半必须等长 (短的一侧用 NOP_MODE 补齐)，否则切分点错位、电机路由出错。
-
-Control_Mode 取值 = router.h RouterControlMode 枚举 (见 MotorFunc)，固件已实现：
-  位置 / 速度 / 力矩 · Iq / Id · 阻抗(弹簧/阻尼/惯量/原点) · 各环 PID ·
-  状态派发 · 清内环错误 · 清外环错误 · 轨迹(init/deinit/vmax/amax/pos) ·
-  回零(init/前向力矩/反向位置) · 刷参 · 清Flash。
 """
 
 from enum import IntEnum
@@ -21,48 +7,77 @@ from enum import IntEnum
 
 # ==================================================================== Tx 反馈帧
 class TxFrame:
-    """MCU -> 上位机 反馈帧 (对应 router.c TX_* 常量)。"""
+    """
+    MCU -> 上位机 反馈帧 (对应 router_tran_handle.c 的 TX_FRAME_* 常量)。
 
-    # 帧结构
-    HEADER            = 0x5A
-    TAIL              = 0x0D
-    FIXED_HEADER_SIZE = 10
-    TAIL_SIZE         = 3
-    MAX_CURVE_COUNT   = 64
-    MAX_FRAME_SIZE    = 1024      # = router.h ROUTER_MAX_TX_FRAME_SIZE
+    [0]        帧头 0xCC
+    [1]        ID (发送源 = MCU 节点号)
+    [2]        Func (RouterTxFuncCode)
+    [3..6]     帧计数器 uint32 小端
+    [7..]      curve_cnt 个 float32 小端 (按注册索引顺序)
+    [tail]     帧尾 0xDD
+    """
 
-    # timestamp 换算成秒时的基准频率 (按 func 选内环/外环)
-    INNER_FREQ        = 10000.0
-    OUTER_FREQ        = 200.0
+    HEADER          = 0xCC
+    TAIL            = 0xDD
+    HEADER_SIZE     = 7            # 帧头(1) + ID(1) + Func(1) + 帧计数器(4)
+    TAIL_SIZE       = 1            # 帧尾(1)；无软件 CRC，链路层自带校验
+    CURVE_SIZE      = 4            # 每条曲线一个 float32
+    MAX_CURVE_COUNT = 14           # ROUTER_TX_MAX_CURVE_CNT
+    MAX_FRAME_SIZE  = HEADER_SIZE + MAX_CURVE_COUNT * CURVE_SIZE + TAIL_SIZE   # = 64
+    COUNTER_MASK    = 0xFFFFFFFF
+
+    @classmethod
+    def frame_size(cls, curve_count):
+        """给定曲线数量算整帧长度 (新协议帧里没有长度字段，长度由曲线数量唯一确定)。"""
+        return cls.HEADER_SIZE + curve_count * cls.CURVE_SIZE + cls.TAIL_SIZE
 
 
 # ==================================================================== Rx 命令帧
 class RxFrame:
-    """上位机 -> MCU 命令帧 (对应 router.c RX_* 常量)。"""
+    """
+    上位机 -> MCU 命令帧 (对应 router_rec_handle.c 的 RX_FRAME_* 常量)。
 
-    # 帧结构
-    HEADER            = 0x3B
-    TAIL              = 0x1E
-    FIXED_HEADER_SIZE = 5
-    TAIL_SIZE         = 1
-    MAX_COMMANDS      = 20        # router.c: command_num > 20 直接丢弃
+    [0]        帧头 0xAA
+    [1]        ID (目标 MCU 节点号)
+    [2]        Func (RouterRxFuncCode)
+    [3..6]     同步时间戳 uint32 小端 (当前固件不解析，用作帧计数器)
+    每条命令:  Control_Mode(uint16 小端) + Command(int16 小端)
+    [tail]     帧尾 0xBB
+    """
+
+    HEADER       = 0xAA
+    TAIL         = 0xBB
+    HEADER_SIZE  = 7            # 帧头(1) + ID(1) + Func(1) + 时间戳(4)
+    TAIL_SIZE    = 1
+    CMD_SIZE     = 4            # Control_Mode(2) + Command(2)
+    MAX_COMMANDS = 14           # = router_rec_handle.h ROUTER_RX_MAX_CMD_CNT
+    MAX_FRAME_SIZE = HEADER_SIZE + MAX_COMMANDS * CMD_SIZE + TAIL_SIZE   # = 64
 
     CANFD_VALID_SIZES = (8, 12, 16, 20, 24, 32, 48, 64)
 
 
 # ==================================================================== 通信功能码
-class CommFunc(IntEnum):
-    """router.h RouterTxCommFunc / RouterRxCommFunc。"""
+class TxFunc(IntEnum):
+    """router_tran_handle.h RouterTxFuncCode (MCU -> 上位机)。"""
 
-    # 发送 (MCU -> 上位机)
-    TX_NORMAL            = 0     # Router_Comm_USB_USART_Tx_Normal
-    TX_HIGH              = 1     # Router_Comm_USB_USART_Tx_High
-    FDCAN_TX_NORMAL      = 2     # Router_Comm_FDCAN_Tx_Normal
+    USB_USART_NORMAL = 0    # Router_Comm_USB_USART_Tx_Normal，1kHz
+    USB_USART_HIGH   = 1    # Router_Comm_USB_USART_Tx_High，  10kHz
+    FDCAN_NORMAL     = 2    # Router_Comm_FDCAN_Tx_Normal，    1kHz
+    FDCAN_HIGH       = 3    # Router_Comm_FDCAN_Tx_High，      10kHz
 
-    # 接收 (上位机 -> MCU)
-    RX_USB_USART_COMMAND = 3     # Router_Comm_USB_USART_Cmd
-    RX_FDCAN_COMMAND     = 4     # Router_Comm_FDCAN_Cmd
-    RX_FDCAN_OTA         = 5     # Router_Comm_FDCAN_OTA
+
+TX_ACCEPTED_FUNCS = (TxFunc.USB_USART_NORMAL, TxFunc.FDCAN_NORMAL)
+
+# 低速曲线采样频率
+LOW_SPEED_FREQ = 1000.0
+
+
+class RxFunc(IntEnum):
+    """router_rec_handle.h RouterRxFuncCode (上位机 -> MCU)。当前固件不校验该字段。"""
+
+    USB_USART_CMD = 3       # Router_Comm_USB_USART_Cmd
+    FDCAN_CMD     = 4       # Router_Comm_FDCAN_Cmd
 
 
 # ==================================================================== MCU 拓扑
@@ -70,10 +85,8 @@ class McuConfig:
     """
     机械手 MCU 硬件拓扑。
 
-    ⚠ 待确认：router.h 的 RouterMCUObject 只显式定义到 MCU5 (0xB5)，
-      但 router.c 的告警文案写“支持 0xB0~0xB7”。此处沿用 router.c 的 8 个，
-      与旧 GUI 一致。若实际只有 6 个 MCU，把 COUNT 改成 6 即可 (其余层不动)，
-      并建议在 router.h 里补齐 MCU6/MCU7 枚举以保持一致。
+    节点号见 router_common.h RouterCommObject：MCU0~MCU7 = 0xB0~0xB7 (新版头文件已补齐 8 个)。
+    本工程只用低速策略 (1kHz)：每个 MCU 管两个电机，各注册 5 条低速曲线
     """
 
     COUNT = 8
@@ -106,60 +119,80 @@ class McuConfig:
 
 
 # ==================================================================== 控制功能
+# 电机二的 mode = 电机一的 mode + 300 (router_rec_handle.h 里 202/502、232/532、…、322/622
+# 逐条如此)。所以功能表只列电机一的码，电机二用这个步长换算。
+MOTOR_MODE_STRIDE = 300
+
+
 class MotorFunc(IntEnum):
     """
-    Control_Mode 功能码 —— 逐值对应 router.h 的 RouterControlMode。
+    Control_Mode 功能码 —— 取值为【电机一】的 RouterRxControlMode，电机二 = 本值 + 300。
 
-    两个电机共用同一套功能码，电机由命令的前/后半段位置区分 (见模块顶部说明)，
-    所以 mode 与电机无关。每个成员携带 (功能码, scale)：
-      scale = 把浮点物理量转成下发 int16 的乘数，即 param = round(物理量 × scale)。
-      物理量一律取【输出轴】单位——齿轮比 GEAR 在固件换算里恰好抵消，见各行注释。
+    每个成员携带 (电机一功能码, scale)：
+      scale = 把浮点物理量转成下发 int16 的乘数，即 param = round(物理量 × scale)，
+              逐条取自 router_rec_handle.c 的 handler 换算 (param -> 物理量)。
+      物理量一律取【输出轴】单位。
     """
 
     def __new__(cls, code, scale):
-        """让每个成员既是它的功能码 int(func)，又携带量化乘数 .scale (见类文档)。"""
+        """让每个成员既是电机一的功能码 int(func)，又携带量化乘数 .scale (见类文档)。"""
         obj = int.__new__(cls, code)
         obj._value_ = code
         obj.scale = scale
         return obj
 
-    #                          code    scale    # router.c handler (param -> 物理量)
+    #                            M1 code  scale     # router_rec_handle.c handler (param -> 物理量)
     # —— 基本控制 (输出轴单位) ——
-    THETA_GEAR              = (   6,  100.0)   # 位置 θ_m = param·GEAR/100  ⇒ θ_out=param/100
-    OMEGA_GEAR              = (   7,  100.0)   # 速度 ω_m = param·GEAR/100  ⇒ ω_out=param/100
-    TORQUE_GEAR             = (   8,    1.0)   # 力矩(mN·m) τ_m=param/GEAR ⇒ τ_out=param，param=τ_out(mN·m)
-    IQ                      = (   9, 1000.0)   # q 轴电流 iq = param·0.001
-    ID                      = (  10, 1000.0)   # d 轴电流 id = param·0.001
-    # —— 阻抗 ——
-    IMPEDANCE_SPRING        = (  32,   10.0)   # k = param/10
-    IMPEDANCE_DAMPER        = (  33,  100.0)   # d = param/100
-    IMPEDANCE_INERTIA       = (  34, 1000.0)   # j = param/1000
-    IMPEDANCE_SPRING_ORIGIN = (  35,  100.0)   # 原点 θ_m = param·GEAR/100 ⇒ 输出轴 param/100
+    THETA_GEAR               = (   206,  100.0)   # θ = param/100        (ServiceThetamAccCmd)
+    OMEGA_GEAR               = (   207,  100.0)   # ω = param/100        (ServiceVelCmd)
+    TORQUE_GEAR              = (   208,    1.0)   # τ(mN·m) = param      (ServiceTorqueCmd)
+    IQ                       = (   209, 1000.0)   # iq = param·0.001
+    ID                       = (   210, 1000.0)   # id = param·0.001
+    # —— 阻抗 (★ 新固件换算已变，见下) ——
+    IMPEDANCE_SPRING         = (   232,  100.0)   # k = param/100    (旧协议 /10)
+    IMPEDANCE_DAMPER         = (   233, 1000.0)   # d = param/1000   (旧协议 /100)
+    IMPEDANCE_INERTIA        = (   234,10000.0)   # j = param/10000  (旧协议 /1000)
+    IMPEDANCE_SPRING_ORIGIN  = (   235,  100.0)   # 原点 = param/100
     # —— 各环 PID ——
-    CUR_PID_KP              = (  52, 1000.0)   # param·0.001
-    CUR_PID_KI              = (  53, 1000.0)
-    VEL_PID_KP              = (  54, 1000.0)
-    VEL_PID_KI              = (  55, 1000.0)
-    POS_PID_KP              = (  56,    1.0)   # param (无缩放)
-    POS_PID_KI              = (  57,    1.0)
+    CUR_PID_KP               = (   252, 1000.0)   # param·0.001
+    CUR_PID_KI               = (   253, 1000.0)
+    VEL_PID_KP               = (   254, 1000.0)
+    VEL_PID_KI               = (   255, 1000.0)
+    POS_PID_KP               = (   256,    1.0)   # param (无缩放)
+    POS_PID_KI               = (   257,    1.0)
     # —— 错误清除 (无参数，param 被固件忽略) ——
-    CLEAR_INNER_ERROR       = (  70,    1.0)   # 清内环错误 (MotorInnerCtrl_ServiceClearError)，由固件决定是否从内环错误态恢复
-    CLEAR_OUTER_ERROR       = (  71,    1.0)   # 清外环错误 (MotorOuterCtrl_ServiceClearError)，由固件决定是否从外环错误态恢复
+    CLEAR_INNER_ERROR        = (   270,    1.0)   # 清内环错误，由固件决定是否从内环错误态恢复
+    CLEAR_OUTER_ERROR        = (   271,    1.0)   # 清外环错误，由固件决定是否从外环错误态恢复
     # —— 状态机 ——
-    DISPATCH_STATE          = (  72,    1.0)   # 状态机派发；param = 状态码 (见 MotorState)
+    DISPATCH_STATE           = (   272,    1.0)   # 状态机派发；param = 状态码 (见 MotorState)
     # —— 轨迹 (输出轴单位) ——
-    TRAJ_INIT               = (  82,    1.0)   # 无参数
-    TRAJ_DEINIT             = (  83,    1.0)   # 无参数
-    TRAJ_VEL_MAX            = (  84,  100.0)   # param·GEAR/100 ⇒ 输出轴 param/100
-    TRAJ_ACL_MAX            = (  85,  100.0)
-    TRAJ_POS_CMD            = (  86,  100.0)
-    # —— 回零 (Homing，输出轴单位) ——
-    HOMING_INIT              = ( 101,    1.0)   # 触发回零 (无参数)
-    HOMING_FORWARD_TORQUE    = ( 102,    1.0)   # 前向力矩(mN·m) 换算同 TORQUE_GEAR，param=τ_out(mN·m)
-    HOMING_BACKWARD_POSITION = ( 103,  100.0)   # 反向位置 θ_m = param·GEAR/100 ⇒ 输出轴 param/100
+    TRAJ_INIT                = (   282,    1.0)   # 无参数
+    TRAJ_DEINIT              = (   283,    1.0)   # 无参数
+    TRAJ_VEL_MAX             = (   284,  100.0)
+    TRAJ_ACL_MAX             = (   285,  100.0)
+    TRAJ_POS_CMD             = (   286,  100.0)
+    # —— 回零 (Homing，输出轴单位)。新固件把前/反向的力矩与位置拆成了 4 条命令 ——
+    HOMING_INIT              = (   301,    1.0)   # 触发回零 (无参数)
+    HOMING_FORWARD_TORQUE    = (   302,    1.0)   # 前向力矩(mN·m) = param
+    HOMING_BACKWARD_TORQUE   = (   303,    1.0)   # 反向力矩(mN·m) = param   (新增)
+    HOMING_FORWARD_POSITION  = (   304,  100.0)   # 前向位置 = param/100      (新增)
+    HOMING_BACKWARD_POSITION = (   305,  100.0)   # 反向位置 = param/100
+    # —— 系统辨识 ——
+    SYS_IDEN                 = (   311,    1.0)   # 触发系统辨识 (无参数)；上位机暂未开放按钮
     # —— 设备级 ——
-    FLASHING_PARAMS          = ( 121,    1.0)   # 按配置序号重置控制参数为预设并刷入 Flash；param = config_index (见 ResetControlParams，0/1)
-    CLEAR_FLASH_ERROR        = ( 122,    1.0)   # 清除 Flash 错误 (无参数)
+    FLASHING_PARAMS          = (   321,    1.0)   # 按配置序号重置控制参数为预设并刷 Flash；param = config_index
+    CLEAR_FLASH_ERROR        = (   322,    1.0)   # 清除 Flash 错误 (无参数)
+
+    def code_for(self, motor=0):
+        """本功能对【第 motor 个电机】(0/1) 的 Control_Mode 值：电机0 = 本值，电机1 = 本值+300。"""
+        if motor not in (0, 1):
+            raise ValueError(f"无效的电机序号: {motor!r} (应为 0 或 1)")
+        return int(self) + MOTOR_MODE_STRIDE * motor
+
+    @classmethod
+    def code_of(cls, func, motor=0):
+        """(功能, 电机序号) -> Control_Mode 值。func 可为 MotorFunc 成员或其电机一功能码。"""
+        return cls(func).code_for(motor)
 
     @classmethod
     def scale_of(cls, func):
@@ -167,23 +200,21 @@ class MotorFunc(IntEnum):
         return cls(func).scale
 
 
-# 电机路由补齐用的空命令：固件 switch 无此 case -> 落 default 被安全忽略。
-# 用于给"未寻址的那个电机"占位，保证命令列表前后两半等长 (见模块顶部说明)。
-NOP_MODE = 0
+# ==================================================================== 帧尾冲突自检 (应恒为空)
+TAIL_CONFLICT_MODES = tuple(
+    code
+    for func in MotorFunc
+    for code in (func.code_for(0), func.code_for(1))
+    if (code & 0xFF) == RxFrame.TAIL
+)
 
 
 # ==================================================================== 电机状态机
 class MotorState:
     """
-    电机状态机 —— 逐条对应固件 MotorStateType 枚举 (名称/数值已核对一致)。
+    电机状态机 —— 逐条对应固件 MotorStateType 枚举 (已与新固件
+    motor_state_machine.h 重新核对，本次协议改动未涉及状态码)。
     用于：① 解析 Tx 反馈里的 state 曲线；② 作为 DISPATCH_STATE 命令的参数(状态码)。
-    反馈解析与命令派发共用同一套：固件 DispatchStateMachine 收的即此枚举。
-
-    ★ 错误系统已重构：旧的各阶段错误态 (StartupError=1 / DbgCurrentError=21 /
-      DbgVelocityError=41 / DbgPositionError=61 / AppError=81 / InnerOuterMismatch=255)
-      与 StartupReady=2 / StartupParamsInit=3 已移除；StartupReady 现为 3；
-      内环错误 150~152、外环错误 153~155 为独立错误码，内外环不一致错误为 165 (见下)。
-      清错用 CLEAR_INNER_ERROR(70) / CLEAR_OUTER_ERROR(71)。
     """
 
     CODES = {

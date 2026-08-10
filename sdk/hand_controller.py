@@ -61,6 +61,10 @@ class HandController:
         """向选中 MCU 下发 q 轴电流指令 (A) 到目标电机。"""
         return self._run(mcu_indices, lambda c, i: c.send_iq(i, iq, motor))
 
+    def send_id(self, mcu_indices, i_d, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发 d 轴电流指令 (A) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_id(i, i_d, motor))
+
     def send_impedance_origin(self, mcu_indices, origin, motor=MotorTarget.BOTH):
         """向选中 MCU 下发阻抗弹簧原点 (输出轴 rad) 到目标电机。"""
         return self._run(mcu_indices, lambda c, i: c.send_impedance_origin(i, origin, motor))
@@ -103,15 +107,22 @@ class HandController:
                          lambda c, i: c.send_flashing_params(i, config_index, motor))
 
     # ------------------------------------------------- 回零 (Homing)
-    def send_homing_params(self, mcu_indices, forward_torque, backward_pos, motor=MotorTarget.BOTH):
-        """只更新回零参数 (前向力矩/反向位置)，不触发回零。发到目标电机。"""
+    # 新固件的回零参数是四条：前/反向力矩 (mN·m) + 前/反向位置 (rad)。
+    def send_homing_params(self, mcu_indices, forward_torque, backward_torque,
+                           forward_pos, backward_pos, motor=MotorTarget.BOTH):
+        """只更新回零四参数 (前/反向力矩、前/反向位置)，不触发回零。发到目标电机。"""
         return self._run(mcu_indices,
-                         lambda c, i: c.send_homing_params(i, forward_torque, backward_pos, motor))
+                         lambda c, i: c.send_homing_params(
+                             i, forward_torque, backward_torque,
+                             forward_pos, backward_pos, motor))
 
-    def send_homing_full(self, mcu_indices, forward_torque, backward_pos, motor=MotorTarget.BOTH):
-        """一帧内更新回零参数并触发回零。发到目标电机。"""
+    def send_homing_full(self, mcu_indices, forward_torque, backward_torque,
+                         forward_pos, backward_pos, motor=MotorTarget.BOTH):
+        """一帧内更新回零四参数并触发回零。发到目标电机。"""
         return self._run(mcu_indices,
-                         lambda c, i: c.send_homing_full(i, forward_torque, backward_pos, motor))
+                         lambda c, i: c.send_homing_full(
+                             i, forward_torque, backward_torque,
+                             forward_pos, backward_pos, motor))
 
     # ------------------------------------------------- 类型 C：一帧内设定 vmax/amax + 目标位置
     def send_trajectory(self, mcu_indices, vel_max, acl_max, pos, motor=MotorTarget.BOTH):
@@ -126,3 +137,7 @@ class HandController:
         """只更新轨迹的 vmax/amax (不下发目标位置)，沿用上一帧的 pos_cmd。发到目标电机。"""
         return self._run(mcu_indices,
                          lambda c, i: c.send_trajectory_limits(i, vel_max, acl_max, motor))
+
+    def send_trajectory_acl_max(self, mcu_indices, acl_max, motor=MotorTarget.BOTH):
+        """只更新轨迹加速度上限 amax，沿用上一帧 vmax 与目标位置。发到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_trajectory_acl_max(i, acl_max, motor))

@@ -18,17 +18,23 @@ import time
 
 import serial
 
-from sdk.protocol.constants import McuConfig
+from sdk.protocol.constants import McuConfig, TxFrame
 from sdk.protocol.tx_feedback_codec import TxFeedbackCodec
 from sdk.models import LinkStats
+
+# 帧计数器缺口大于此值就认为是"下位机重启/长时间断流"，只重新对齐、不计入丢包，
+# 免得 uint32 计数器错位时一次记出天文数字的丢包数。
+MAX_PLAUSIBLE_GAP = 1000
 
 
 class SerialManager:
 
-    def __init__(self, port, baudrate=115200, timeout=0.1):
+    def __init__(self, port, baudrate=115200, timeout=0.1,
+                 curve_count=McuConfig.LOW_SPEED_CURVE_COUNT):
         """
         构造 (不打开串口)。真正打开在 connect()。
-        参数: port 端口名 (如 'COM3')；baudrate 波特率；timeout 读超时秒。
+        参数: port 端口名 (如 'COM3')；baudrate 波特率；timeout 读超时秒；
+              curve_count 下位机注册的曲线数量 (新 Tx 帧无长度字段，靠它定帧长)。
         用法: mgr = SerialManager('COM3', 115200); mgr.connect()。
         """
         self.port = port
@@ -44,7 +50,7 @@ class SerialManager:
         self._data_lock = threading.Lock()   # 保护 _frames / _stats
         self._write_lock = threading.Lock()  # 串行化 write
 
-        self._codec = TxFeedbackCodec()
+        self._codec = TxFeedbackCodec(curve_count)
         self._frames = [None] * McuConfig.COUNT       # list[McuFeedback | None]
         self._stats = [LinkStats() for _ in range(McuConfig.COUNT)]
         self._expected_counter = [0] * McuConfig.COUNT
@@ -150,7 +156,8 @@ class SerialManager:
 
     def _update_stats_locked(self, idx, frame_counter):
         """
-        更新收包/丢包计数：比对本帧计数器与期望值，缺口即丢包数 (按 0~255 回绕)。
+        更新收包/丢包计数：比对本帧计数器与期望值，缺口即丢包数
+        (新协议帧计数器是 uint32，按 0xFFFFFFFF 回绕)。
         调用方须已持有 _data_lock。
         """
         st = self._stats[idx]
@@ -158,11 +165,11 @@ class SerialManager:
         if st.ever_received:
             expected = self._expected_counter[idx]
             if frame_counter != expected:
-                lost = (frame_counter - expected) & 0xFF
-                if 0 < lost < 255:
+                lost = (frame_counter - expected) & TxFrame.COUNTER_MASK
+                if 0 < lost <= MAX_PLAUSIBLE_GAP:
                     st.lost += lost
         st.ever_received = True
-        self._expected_counter[idx] = (frame_counter + 1) & 0xFF
+        self._expected_counter[idx] = (frame_counter + 1) & TxFrame.COUNTER_MASK
 
     # ============================================================ 快照查询
     def get_snapshot(self, mcu):

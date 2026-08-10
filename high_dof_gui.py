@@ -309,14 +309,17 @@ class HighDofHandGUI:
                    command=self._do_traj_pos_only).pack(side="left", padx=2)
         ttk.Button(f, text="仅更新限幅", width=12,
                    command=self._do_traj_limits_only).pack(side="left", padx=2)
+        ttk.Button(f, text="仅更新amax", width=12,
+                   command=self._do_traj_acl_only).pack(side="left", padx=2)
 
     def _build_homing_section(self, parent):
-        """回零分区：前向力矩/反向位置输入 + "更新参数并回零"/"仅更新参数"/"仅回零" 三按钮。"""
-        f = ttk.LabelFrame(parent, text="回零 Homing (前向力矩 / 反向位置)")
+        """回零分区：前/反向力矩与前/反向位置四输入 + "更新参数并回零"/"仅更新参数"/"仅回零" 三按钮。"""
+        f = ttk.LabelFrame(parent, text="回零 Homing (前/反向力矩 · 前/反向位置)")
         f.pack(fill="x", padx=6, pady=5)
         r = ttk.Frame(f); r.pack(side="left")
         self._labeled_entries(r, [
-            ("hm_tau", "前向力矩(mN·m)", "0.0"), ("hm_pos", "反向位置(rad)", "0.0"),
+            ("hm_tau_f", "前向力矩(mN·m)", "0.0"), ("hm_tau_b", "反向力矩(mN·m)", "0.0"),
+            ("hm_pos_f", "前向位置(rad)", "0.0"), ("hm_pos_b", "反向位置(rad)", "0.0"),
         ])
         ttk.Button(f, text="更新参数并回零", width=14, command=self._do_homing_full).pack(side="left", padx=6)
         ttk.Button(f, text="仅更新参数", width=12, command=self._do_homing_params).pack(side="left", padx=2)
@@ -359,7 +362,8 @@ class HighDofHandGUI:
             messagebox.showerror("错误", "请输入有效的波特率数字")
             return
 
-        self.manager = SerialManager(port, baud, self.config.serial.timeout)
+        self.manager = SerialManager(port, baud, self.config.serial.timeout,
+                                     curve_count=self.config.feedback_curve_count)
         if self.manager.connect():
             self.commander = SerialCommander(
                 self.manager,
@@ -503,29 +507,50 @@ class HighDofHandGUI:
         results = self.controller.send_trajectory_limits(self._targets(), v, a, self._motor_target())
         self._show_results(f"轨迹限幅 [v={v}, a={a}]", results)
 
-    def _do_homing_full(self):
-        """"更新参数并回零"回调：一帧内下发前向力矩/反向位置并触发回零。"""
+    def _homing_inputs(self):
+        """读回零四参数 (前向力矩/反向力矩/前向位置/反向位置)；输入非法则弹提示并返回 None。"""
+        try:
+            return (self._getf("hm_tau_f"), self._getf("hm_tau_b"),
+                    self._getf("hm_pos_f"), self._getf("hm_pos_b"))
+        except ValueError:
+            messagebox.showwarning("输入错误", "回零参数: 请输入有效数字")
+            return None
+
+    def _do_traj_acl_only(self):
+        """"仅更新amax"回调：只发加速度上限，沿用上一帧 vmax 与目标位置。"""
         if not self._ensure_connected():
             return
         try:
-            tau, pos = self._getf("hm_tau"), self._getf("hm_pos")
+            a = self._getf("tj_a")
         except ValueError:
-            messagebox.showwarning("输入错误", "回零参数: 请输入有效数字")
+            messagebox.showwarning("输入错误", "轨迹加速度: 请输入有效数字")
             return
-        results = self.controller.send_homing_full(self._targets(), tau, pos, self._motor_target())
-        self._show_results(f"回零(参数+执行) [τ={tau}, pos={pos}]", results)
+        results = self.controller.send_trajectory_acl_max(self._targets(), a, self._motor_target())
+        self._show_results(f"轨迹amax [{a}]", results)
+
+    def _do_homing_full(self):
+        """"更新参数并回零"回调：一帧内下发回零四参数并触发回零。"""
+        if not self._ensure_connected():
+            return
+        vals = self._homing_inputs()
+        if vals is None:
+            return
+        tf, tb, pf, pb = vals
+        results = self.controller.send_homing_full(self._targets(), tf, tb, pf, pb,
+                                                   self._motor_target())
+        self._show_results(f"回零(参数+执行) [τ={tf}/{tb}, pos={pf}/{pb}]", results)
 
     def _do_homing_params(self):
-        """"仅更新参数"回调：只发前向力矩/反向位置，不触发回零。"""
+        """"仅更新参数"回调：只发回零四参数，不触发回零。"""
         if not self._ensure_connected():
             return
-        try:
-            tau, pos = self._getf("hm_tau"), self._getf("hm_pos")
-        except ValueError:
-            messagebox.showwarning("输入错误", "回零参数: 请输入有效数字")
+        vals = self._homing_inputs()
+        if vals is None:
             return
-        results = self.controller.send_homing_params(self._targets(), tau, pos, self._motor_target())
-        self._show_results(f"回零参数 [τ={tau}, pos={pos}]", results)
+        tf, tb, pf, pb = vals
+        results = self.controller.send_homing_params(self._targets(), tf, tb, pf, pb,
+                                                     self._motor_target())
+        self._show_results(f"回零参数 [τ={tf}/{tb}, pos={pf}/{pb}]", results)
 
     def _do_homing(self):
         """"仅回零"回调：只触发回零，沿用上一帧参数。"""

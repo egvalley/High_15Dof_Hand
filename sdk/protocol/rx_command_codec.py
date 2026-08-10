@@ -1,29 +1,25 @@
 """
 Rx 命令帧编码器：上位机 -> MCU。
 
-组帧 + 电机路由：把"电机0命令" / "电机1命令"两组 MotorCommand 编码成 0x3B ... 0x1E 帧。
-固件按命令在列表中的前/后半段位置区分电机 (见 router.c DeviceRouter_RxPayloadHandler)：
-    前半段 (i <  command_num/2) -> 电机0 (M1)
-    后半段 (i >= command_num/2) -> 电机1 (M2)
-固件切分点是 command_num//2，故两半必须【等长】，短的一侧用 NOP_MODE 补齐，
-最终 command_num = 2 × max(两组长度)，前一半属电机0、后一半属电机1，切分点恰好落在中间。
+组帧：把一串 MotorCommand 编码成 0xAA … 0xBB 帧。
+★ 新协议里电机由【mode 自带的 M1/M2 后缀】区分 (电机二 = 电机一 + 300)，
+  不再靠"命令在帧里的前/后半段位置"，所以本层只是把命令平铺进帧，
+  旧版的"两半用 NOP_MODE 补齐到等长"机制已彻底废除。
 
-帧格式：
-    [0]        帧头 0x3B
+帧格式 (router_rec_handle.c)：
+    [0]        帧头 0xAA
     [1]        目标 ID
-    [2]        帧计数器
-    [3]        Func
-    [4]        command_num
-    每条命令:  mode(1) + param(int16 小端, 2)
-    [tail]     帧尾 0x1E
+    [2]        Func
+    [3..6]     同步时间戳 uint32 小端 (固件当前不解析，本层填帧计数器)
+    每条命令:  Control_Mode(uint16 小端) + Command(int16 小端)
+    [tail]     帧尾 0xBB
 
-约束 (router.c)：0 < command_num <= 20，即每个电机最多 10 条命令。
+约束：0 < 命令条数 <= 14 (ROUTER_RX_MAX_CMD_CNT)，满帧 = 7 + 14×4 + 1 = 64 字节。
 """
 
 import struct
 
-from sdk.protocol.constants import RxFrame, CommFunc, McuConfig, NOP_MODE
-from sdk.models import MotorCommand
+from sdk.protocol.constants import RxFrame, RxFunc, McuConfig, TAIL_CONFLICT_MODES
 
 
 class RxCommandCodec:
@@ -43,44 +39,50 @@ class RxCommandCodec:
                 return frame + bytes(s - n)
         return frame
 
-    def encode(self, mcu, motor0_commands, motor1_commands,
-               counter=0, func=CommFunc.RX_FDCAN_COMMAND):
+    @staticmethod
+    def _check_tail_conflict(commands):
+        """
+        拦截 mode 低字节 == 帧尾 的命令 (现行帧尾 0xBB 下不存在这种 mode，本检查是护栏)。
+
+        固件靠"每 4 字节扫一次、遇帧尾字节即认为帧结束"来定位命令条数，这类命令会连同
+        它之后的所有命令被静默丢弃 (详见 constants.TAIL_CONFLICT_MODES 的说明)。
+        与其发出去后无声失效，不如在这里抛错。
+        """
+        bad = [c.mode for c in commands if (c.mode & 0xFF) == RxFrame.TAIL]
+        if bad:
+            raise ValueError(
+                f"命令 mode {bad} 的低字节与帧尾 0x{RxFrame.TAIL:02X} 相同，"
+                f"下位机会把它当成帧尾并丢弃其后所有命令 (功能表内的冲突码: "
+                f"{list(TAIL_CONFLICT_MODES) or '无'})，需固件侧改帧尾值或改这些 mode 的编号")
+
+    def encode(self, mcu, commands, counter=0, func=RxFunc.FDCAN_CMD):
         """
         参数:
-            mcu:             index 0~7 或 ID 0xB0~0xB7
-            motor0_commands: list[MotorCommand]，发给电机0 (前半段/M1)
-            motor1_commands: list[MotorCommand]，发给电机1 (后半段/M2)
-            counter:         帧计数器 0~255
-            func:            CommFunc
+            mcu:      index 0~7 或 ID 0xB0~0xB7
+            commands: list[MotorCommand]，mode 已是"带电机后缀"的 Control_Mode，顺序即执行顺序
+            counter:  写入时间戳字段的帧计数器 0~0xFFFFFFFF
+            func:     RxFunc
         返回:
             bytes
         编码后统一补齐到 CAN-FD 合法长度 (本项目走 FDCAN)。
         """
-        # 两半用 NOP 补齐到等长，再拼成 [电机0命令... 电机1命令...]，令固件切分点落在正中
-        half = max(len(motor0_commands), len(motor1_commands))
-        if half == 0:
+        commands = list(commands)
+        if not commands:
             raise ValueError("命令列表为空")
-        nop = MotorCommand(NOP_MODE, 0)
-        m0 = list(motor0_commands) + [nop] * (half - len(motor0_commands))
-        m1 = list(motor1_commands) + [nop] * (half - len(motor1_commands))
-        commands = m0 + m1
-
-        command_num = len(commands)
-        if command_num > RxFrame.MAX_COMMANDS:
+        if len(commands) > RxFrame.MAX_COMMANDS:
             raise ValueError(
-                f"命令数量超出下位机上限({RxFrame.MAX_COMMANDS}): {command_num} "
-                f"(每个电机最多 {RxFrame.MAX_COMMANDS // 2} 条)")
+                f"命令数量超出下位机上限({RxFrame.MAX_COMMANDS}): {len(commands)}")
+        self._check_tail_conflict(commands)
 
         target_id = McuConfig.id_of(mcu)
 
         data = bytearray()
         data.append(RxFrame.HEADER)
         data.append(target_id & 0xFF)
-        data.append(counter & 0xFF)
         data.append(int(func) & 0xFF)
-        data.append(command_num & 0xFF)
+        data += struct.pack("<I", counter & 0xFFFFFFFF)
         for cmd in commands:
-            data.append(cmd.mode & 0xFF)
+            data += struct.pack("<H", cmd.mode & 0xFFFF)
             data += struct.pack("<h", self.clamp_int16(cmd.value))
         data.append(RxFrame.TAIL)
 

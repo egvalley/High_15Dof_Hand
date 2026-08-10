@@ -36,7 +36,12 @@ class MotorTarget(Enum):
 # ==================================================================== 命令模型
 @dataclass(frozen=True)
 class MotorCommand:
-    """一条 (控制模式, 已量化的 int16 参数)。"""
+    """
+    一条 (控制模式, 已量化的 int16 参数)。
+
+    mode 是【带电机后缀】的 Control_Mode (uint16)：电机0 用 MotorFunc 本值，
+    电机1 用本值 + 300 (见 MotorFunc.code_for)。新协议不再靠命令位置区分电机。
+    """
 
     mode: int
     value: int
@@ -57,16 +62,22 @@ class MotorFeedback:
 
 @dataclass
 class McuFeedback:
-    """单个 MCU 的一帧完整反馈快照。"""
+    """
+    单个 MCU 的一帧完整反馈快照。
+
+    新协议一帧就是一个采样点 (旧协议的 sample_count 已不存在)，
+    frame_counter 为 uint32，hw_time = frame_counter / 1kHz。
+    """
 
     mcu_index: int
     mcu_id: int
     func: int
     curve_count: int
-    sample_count: int
     frame_counter: int
     hw_time: float
     motors: List[MotorFeedback] = field(default_factory=list)
+    # 原始曲线值 (按注册索引顺序)，曲线表与"2 电机 × 5 字段"不一致时靠它取数
+    curves: List[float] = field(default_factory=list)
 
 
 # ==================================================================== 通信统计

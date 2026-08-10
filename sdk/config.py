@@ -6,7 +6,7 @@
 
 from dataclasses import dataclass, field
 
-from sdk.protocol.constants import CommFunc
+from sdk.protocol.constants import RxFunc, McuConfig
 
 
 @dataclass
@@ -21,10 +21,10 @@ class AppConfig:
     serial: SerialConfig = field(default_factory=SerialConfig)
 
     # 命令帧 Func。
-    #   物理链路是 USB 虚拟串口 / UART 时，语义上应为 RX_USB_USART_COMMAND。
-    #   但当前固件 (router.c) 尚未校验 Func，为不破坏既有可运行行为，
-    #   这里默认沿用 FDCAN 命令码；确认固件后可改成 RX_USB_USART_COMMAND。
-    command_func: CommFunc = CommFunc.RX_FDCAN_COMMAND
+    command_func: RxFunc = RxFunc.FDCAN_CMD
+
+    # 下位机注册的低速曲线数量。
+    feedback_curve_count: int = McuConfig.LOW_SPEED_CURVE_COUNT
 
     # GUI 刷新周期 (ms) ≈ 20 Hz
     refresh_ms: int = 50
