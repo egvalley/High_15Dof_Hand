@@ -61,11 +61,14 @@ class RxCommandCodec:
             mcu:      index 0~7 或 ID 0xB0~0xB7
             commands: list[MotorCommand]，mode 已是"带电机后缀"的 Control_Mode，顺序即执行顺序
             counter:  写入时间戳字段的帧计数器 0~0xFFFFFFFF
-            func:     RxFunc
+            func:     RxFunc，默认 FDCAN_CMD —— 经网关转发到 MCU 的唯一可用取值 (见 RxFunc 文档)
         返回:
             bytes
         编码后统一补齐到 CAN-FD 合法长度 (本项目走 FDCAN)。
         """
+        # 非法 Func 会被网关和 MCU 双双静默丢帧，在这里先炸掉，别让它变成"发了但没反应"
+        func = RxFunc(func)
+
         commands = list(commands)
         if not commands:
             raise ValueError("命令列表为空")

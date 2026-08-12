@@ -74,7 +74,17 @@ LOW_SPEED_FREQ = 1000.0
 
 
 class RxFunc(IntEnum):
-    """router_rec_handle.h RouterRxFuncCode (上位机 -> MCU)。当前固件不校验该字段。"""
+    """
+    router_rec_handle.h RouterRxFuncCode (上位机 -> MCU)。取值已与固件枚举逐条核对。
+
+    ★ 这个字段现在两道关卡都会查，填错 = 整帧被静默丢弃，现象和"串口不通"一模一样：
+      ① 网关 (router_app_host_mcu_tranf.c USBToFdcan)：只有 Func == FDCAN_CMD 且目标 ID
+         不是网关自己，才会把帧原样转到 FDCAN 上；否则直接 return。
+      ② MCU (router_app_motor_cmd.c FrameCheck)：Func 不是这两个值之一即 ERR_INVALID_PARAM。
+
+    所以 PC 侧虽然走 USB 连的网关，Func 也必须填 FDCAN_CMD —— 它标的是【网关往下转发用的
+    那条总线】，不是 PC 到网关这一段。USB_USART_CMD 只适用于把命令直连到 MCU 的调试链路。
+    """
 
     USB_USART_CMD = 3       # Router_Comm_USB_USART_Cmd
     FDCAN_CMD     = 4       # Router_Comm_FDCAN_Cmd

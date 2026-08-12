@@ -17,7 +17,8 @@ class SerialCommander:
         """
         参数:
             serial_manager: SerialManager，编码后的帧由它的 write_data 发出。
-            func:           命令帧 Func (RxFunc)，随物理链路选 FDCAN / USB-USART。
+            func:           命令帧 Func (RxFunc)，默认 FDCAN_CMD。标的是【网关向下转发用的
+                            总线】而不是 PC 这一段，走网关时只能是 FDCAN_CMD (见 RxFunc 文档)。
         用法: SerialCommander(manager, func=cfg.command_func)
         """
         self.sm = serial_manager
