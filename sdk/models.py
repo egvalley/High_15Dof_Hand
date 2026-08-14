@@ -50,14 +50,32 @@ class MotorCommand:
 # ==================================================================== 反馈模型
 @dataclass
 class MotorFeedback:
-    """单个电机的一帧反馈。"""
+    """
+    单个电机的一帧反馈。
 
-    state_code: Optional[int] = None
-    state_name: str = "—"
+    新协议第 0 条曲线是 uint32 错误字位域 (取代旧协议的状态码曲线)：可以同时报多个错误，
+    也可以一个都不报 (error_word == 0)。位的含义与拆位由协议层 sdk.protocol.errors 负责，
+    本层只存"错误字原值 + 已拆好的错误名"。
+    """
+
+    error_word: Optional[int] = None
+    error_names: List[str] = field(default_factory=list)
     theta: Optional[float] = None
     omega: Optional[float] = None
     acl: Optional[float] = None
     torque: Optional[float] = None
+
+    @property
+    def has_error(self):
+        """本帧是否有任何错误置位 (无反馈时为 False)。"""
+        return bool(self.error_word)
+
+    @property
+    def error_text(self):
+        """一行显示文本：无反馈为 '—'，无错误为 '正常'，多个错误用 ' | ' 并列。"""
+        if self.error_word is None:
+            return "—"
+        return " | ".join(self.error_names) or "正常"
 
 
 @dataclass
@@ -76,8 +94,9 @@ class McuFeedback:
     frame_counter: int
     hw_time: float
     motors: List[MotorFeedback] = field(default_factory=list)
-    # 原始曲线值 (按注册索引顺序)，曲线表与"2 电机 × 5 字段"不一致时靠它取数
-    curves: List[float] = field(default_factory=list)
+    # 原始曲线值 (按注册索引顺序)，曲线表与"2 电机 × 5 字段"不一致时靠它取数。
+    # 元素类型随注册类型走：错误字曲线是 int (uint32 位域)，其余是 float
+    curves: List = field(default_factory=list)
 
 
 # ==================================================================== 通信统计

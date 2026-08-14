@@ -6,7 +6,7 @@
 
 from dataclasses import dataclass, field
 
-from sdk.protocol.constants import RxFunc, McuConfig
+from sdk.protocol import RxFunc, McuConfig
 
 
 @dataclass
@@ -21,7 +21,7 @@ class AppConfig:
     serial: SerialConfig = field(default_factory=SerialConfig)
 
     # 命令帧 Func。本项目是 PC --USB--> 网关 --FDCAN--> MCU，网关只转发 Func == FDCAN_CMD
-    # 的帧，所以这里必须是 FDCAN_CMD (详见 constants.RxFunc)。改成 USB_USART_CMD 会整帧被丢。
+    # 的帧，所以这里必须是 FDCAN_CMD (详见 protocol.wire.RxFunc)。改成 USB_USART_CMD 会整帧被丢。
     command_func: RxFunc = RxFunc.FDCAN_CMD
 
     # 下位机注册的低速曲线数量。

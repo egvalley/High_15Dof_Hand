@@ -20,7 +20,7 @@ from sdk.serial_manager import SerialManager
 from sdk.serial_commander import SerialCommander
 from sdk.hand_controller import HandController
 from sdk.models import MotorTarget
-from sdk.protocol.constants import McuConfig
+from sdk.protocol import McuConfig
 
 
 class ScrollableFrame(ttk.Frame):
@@ -123,15 +123,16 @@ class HighDofHandGUI:
         info = ttk.Label(
             self.tab_monitor,
             text="8 个 MCU (0xB0~0xB7)，每个 MCU 管控 2 个电机，"
-                 "每个电机 5 条低速曲线 (状态机 / θ / ω / 加速度 / 力矩)。",
+                 "每个电机 5 条低速曲线 (错误字 / θ / ω / 加速度 / 力矩)。"
+                 "错误字是位域，可同时报多个错误；置位后一直保持，需在指令控制页显式清错。",
             foreground="#555",
         )
         info.pack(fill="x", padx=6, pady=(6, 2))
 
-        cols = ("state", "theta", "omega", "acl", "torque", "meta")
+        cols = ("error", "theta", "omega", "acl", "torque", "meta")
         tree = ttk.Treeview(self.tab_monitor, columns=cols, show="tree headings", height=26)
         tree.heading("#0", text="设备 / 电机")
-        tree.heading("state", text="状态")
+        tree.heading("error", text="错误")
         tree.heading("theta", text="θ (rad)")
         tree.heading("omega", text="ω (rad/s)")
         tree.heading("acl", text="a (rad/s²)")
@@ -139,7 +140,8 @@ class HighDofHandGUI:
         tree.heading("meta", text="链路 / 丢包")
 
         tree.column("#0", width=180, anchor="w")
-        tree.column("state", width=170, anchor="center")
+        # 多个错误并列显示，这一列要足够宽
+        tree.column("error", width=300, anchor="w")
         tree.column("theta", width=110, anchor="e")
         tree.column("omega", width=110, anchor="e")
         tree.column("acl", width=110, anchor="e")
@@ -224,11 +226,13 @@ class HighDofHandGUI:
         """App 动作分区：(按钮文案, commander 方法名) 表驱动，点击调用 _do_action。"""
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
+        # 后四条按错误字的分段清错：内环 bit0~7 / 外环 bit8~15 / 编码器 bit16~17 / Flash
         actions = [
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
             ("清除内环错误", "send_clear_inner_error"),
             ("清除外环错误", "send_clear_outer_error"),
+            ("清除编码器错误", "send_clear_encoder_error"),
             ("清除Flash错误", "send_clear_flash_error"),
         ]
         for k, (label, fn) in enumerate(actions):
@@ -636,14 +640,15 @@ class HighDofHandGUI:
                     self.tree.item(
                         f"mcu{i}_m{m}",
                         values=(
-                            md.state_name,
+                            md.error_text,
                             self._fmt(md.theta),
                             self._fmt(md.omega),
                             self._fmt(md.acl),
                             self._fmt(md.torque),
                             "",
                         ),
-                        tags=(ptag,),
+                        # 有错误置位就标红，压过按丢包率算出来的颜色
+                        tags=("err" if md.has_error else ptag,),
                     )
 
         elif self._ui_connected:

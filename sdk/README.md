@@ -10,15 +10,22 @@ High_15Dof_Hand/
 ├─ high_dof_gui.py               # 仅界面 + 读表单 + 调 controller + 刷新
 └─ sdk/
    ├─ config.py                  # 串口默认参数、Rx Func、曲线数量、刷新率、阈值
-   ├─ models.py                  # dataclass：命令、反馈、统计、结果、目标枚举
+   ├─ models.py                  # dataclass：命令、反馈、统计、结果、目标枚举（不依赖协议层）
    ├─ serial_manager.py          # 串口 IO + 接收线程 + 线程安全快照
    ├─ serial_commander.py        # 控制语义 → 量化 → 按电机取 mode → 编码 → 发送
    ├─ hand_controller.py         # 选哪些 MCU / 批量发送 / 汇总结果
-   └─ protocol/
-      ├─ constants.py            # 唯一协议源：帧头尾、Func、MCU、模式、缩放、状态机
+   └─ protocol/                  # 协议层，按职责分四块，改动只碰对应的那一个
+      ├─ __init__.py             # 包门面：外部一律 `from sdk.protocol import XXX`
+      ├─ wire.py                 # 帧格式与功能码：字节怎么排、Func 填什么
+      ├─ topology.py             # MCU 拓扑 + CurveLayout：第 N 个 32 位字是谁的哪个量、什么类型
+      ├─ errors.py               # 电机错误字位域：反馈里的错误怎么拆
+      ├─ commands.py             # 控制命令码、定点缩放、状态机码
       ├─ rx_command_codec.py     # 上位机→MCU 命令帧编码
       └─ tx_feedback_codec.py    # MCU→上位机 反馈帧拼帧/解析
 ```
+
+依赖只朝下：`protocol/` 不认识 `models`（`wire → topology/errors/commands → 两个 codec`），
+`models.py` 是纯数据结构不认识 `protocol`，GUI 只和 `controller / manager / models` 打交道。
 
 ## 新旧协议差异（本次适配的全部改动点）
 
@@ -27,10 +34,11 @@ High_15Dof_Hand/
 | Rx 帧 | `0x3B`…`0x1E`，头 5 字节 | `0xAA`…`0xBB`，头 7 字节（帧头+ID+Func+4 字节时间戳） |
 | Rx 命令 | mode 1 字节 + param int16，≤20 条 | **mode uint16** + param int16，≤**14** 条 |
 | 电机区分 | 命令列表**前/后半段**，短的一半用 NOP 补齐 | **mode 自带电机后缀**：电机1 = 电机0 + **300**，一帧内任意混排 |
-| Tx 帧 | `0x5A` + 曲线数 N + log2max 表 + 帧计数 + 时间戳 + 采样点数 + N×行 int16 + CRC16 + `0x0D` | `0xCC` + ID + Func + **4 字节帧计数** + **N×float32** + `0xDD`（**无长度字段、无 CRC**） |
-| Tx 数值 | int16 定点，按 log2max 反量化 | **裸 float32**，直接取值 |
+| Tx 帧 | `0x5A` + 曲线数 N + log2max 表 + 帧计数 + 时间戳 + 采样点数 + N×行 int16 + CRC16 + `0x0D` | `0xCC` + ID + Func + **4 字节帧计数** + **N×32 位字** + `0xDD`（**无长度字段、无 CRC**） |
+| Tx 数值 | int16 定点，按 log2max 反量化 | 每条曲线一个 32 位原始字，**按注册类型解**（本表：错误字 uint32，其余 float32） |
+| Tx 电机状态 | 第 0 条曲线是**状态码**（单值，查表取名） | 第 0 条曲线换成 **uint32 错误字位域**：可同时报多个错误，也可一个不报 |
 | Tx 采样 | 一帧可含多行采样点 | **一帧一个采样点**（低速 1kHz 采样即发） |
-| Func | 收发共用一套 0~5 | 收发**各自一套**且数值重叠 → 拆成 `TxFunc`(0~3) / `RxFunc`(3~4) |
+| Func | 收发共用一套 0~5 | 收发各自一套：`TxFunc` 已收敛成**只标速度策略不标总线**的 `NORMAL(0)/HIGH(1)`，`RxFunc`(3~4) |
 | 功能码 | 位置 6 / 速度 7 / 力矩 8 / … | 全部重编号：位置 206 / 速度 207 / 力矩 208 / …（见下） |
 
 ### 功能码与缩放（逐条取自 `router_rec_handle.c` 的 handler）
@@ -45,35 +53,60 @@ High_15Dof_Hand/
 | 阻抗 刚度/阻尼/惯量/原点 | 232~235 | ×100 / **×1000** / **×10000** / ×100 | 阻尼、惯量的换算**已变**（旧为 ×100 / ×1000） |
 | 电流环、速度环 PID | 252~255 | ×1000 | `param·0.001` |
 | 位置环 PID | 256 / 257 | ×1 | `param` |
-| 清内环 / 清外环错误 | 270 / 271 | — | 无参数 |
+| 清内环 / 清外环错误 | 270 / 271 | — | 无参数；各清错误字的一段位域 |
 | 状态派发 | 272 | ×1 | param = 状态码 |
 | 轨迹 init/deinit/vmax/amax/pos | 282~286 | — / — / ×100 / ×100 / ×100 | |
 | 回零 init/前力矩/**反力矩**/**前位置**/反位置 | 301~305 | — / ×1 / ×1 / ×100 / ×100 | 新固件把回零参数拆成 **4 条**（反向力矩、前向位置为新增） |
 | 系统辨识 | 311 | — | 常量已列，GUI 暂未开按钮 |
-| 刷参 / 清 Flash 错误 | 321 / 322 | ×1 / — | |
+| 刷参 / 清 Flash 错误 | 321 / 322 | ×1 / — | Flash 是共享设备，M1/M2 两个 mode 同效 |
+| **清编码器错误** | **323** | — | 新增；清错误字 bit16~bit17，M1/M2 各清自己那路 SPI |
 
-未纳入：`Uq/Ud/Ualpha/Ubeta`(202~205) —— `router_rec_handle.c` 的 switch 里**没有对应 case**。
+未纳入：`Uq/Ud/Ualpha/Ubeta`(202~205) —— 固件 Dispatch 的 switch 里**没有对应 case**。
+
+## 电机错误字（本次协议改动的核心）
+
+反馈里每个电机的第 0 条曲线，uint32 位域，**取代了旧协议的状态码曲线**。
+每个错误独占 1 个 bit，可同时置位若干个，全 0 表示无错误 —— 所以解读方式是逐位拆，不是查表取名。
+
+| 段 | 位域 | 来源枚举 | 已定义的位 | 清除命令 |
+|---|---|---|---|---|
+| 内环 | bit0~bit7 | `InnerErrorSystem` | 编码器读取 / 电流采样 / 控制参数加载 失败 | 270 |
+| 外环 | bit8~bit15 | `OuterErrorSystem` | 控制参数加载 / 电角度标定保存 / 电流标定保存 失败 | 271 |
+| 编码器 | bit16~bit17 | `EncoderErrorSystem` | SPI 断连 / SPI 数据 CRC 失败 | **323** |
+
+- **错误位是粘滞的**：置位后一直保持，不会因为下一次采样正常而自动消失，必须上位机显式清错。
+  这是固件有意为之——避免间歇性断线在上位机读到之前被下一次正常采样悄悄抹掉。
+- 定义在 `protocol/errors.py` 的 `ErrorBit`（成员值即掩码，`.label` 是显示名）。
+  固件新增错误码时**在枚举里加一行**即可；若加到了 `ErrorSeg` 三段之外的位，还要同步放宽段掩码，
+  否则 `is_error_word` 会把正常帧当成定帧错位丢掉。
+- 段内出现未命名的位不算错帧，显示成 `未知位(bitN)`，不会被静默吞掉。
+- 上位机**不再能从反馈读到当前状态机状态**；`MotorState` 只剩下发 `DISPATCH_STATE` 这一个用途。
 
 ## 数据流
 
 控制：GUI → HandController（选 MCU/电机、批量）→ SerialCommander（量化、按电机取 mode）
 → RxCommandCodec（组帧 `0xAA`…`0xBB` + CAN-FD 补齐）→ SerialManager.write_data。
 
-反馈：SerialManager 接收线程 → TxFeedbackCodec（定长拼帧、校验、float32 取值、状态解析）
-→ 线程安全 McuFeedback 快照 → GUI 刷新 TreeView。
+反馈：SerialManager 接收线程 → TxFeedbackCodec（定长拼帧、校验、按 `CurveLayout` 逐条按类型取值、
+错误字拆位）→ 线程安全 McuFeedback 快照 → GUI 刷新 TreeView。
 
 ## 两个必须知道的实现约束
 
-1. **Tx 帧长靠“曲线数量”推**：新 Tx 帧里既没有长度字段也没有 CRC，帧长 = `7 + 4×曲线数 + 1`。
-   上位机默认按 10 条（2 电机 × state/θ/ω/a/τ）解帧，与 `router_tran_handle.c`
-   `DeviceRouter_TranInit` 的低速注册表一致。**改固件曲线注册表，必须同步改**
-   `AppConfig.feedback_curve_count`（或 `McuConfig.LOW_SPEED_CURVE_COUNT`）。
-   因为没有 CRC，定帧靠“帧头 + ID 合法(0xB0~0xB7) + Func 合法(低速 0/2) + 帧尾就位 +
-   浮点有限”这一组条件，任一不满足就丢 1 字节重新找帧头（CAN-FD 的补零字节也这样跳过）。
-2. **本工程只用低速策略**（`app_config.h: ROUTER_TX_LOW_SPEED`）：1kHz 采样即发，
-   Tx Func 只会是 `USB_USART_NORMAL(0)` / `FDCAN_NORMAL(2)`，解码器只接受这两个。
+1. **Tx 帧长与曲线类型都靠“曲线表”推**：新 Tx 帧里既没有长度字段也没有 CRC，
+   帧长 = `7 + 4×曲线数 + 1`，每条曲线是 float 还是 uint32 也只能靠约定。
+   两者都由 `topology.CurveLayout` 从 `MOTOR_CURVES` 推出，默认 10 条
+   （2 电机 × 错误字/θ/ω/a/τ），与固件 `RouterAppFixFreq_Init` 的低速注册表一致。
+   **改固件曲线注册表，必须同步改 `MOTOR_CURVES`** 与 `AppConfig.feedback_curve_count`；
+   曲线数量对不上时布局退回“全 float32”，电机字段映射不出来但原始值仍在 `curves` 里。
+   因为没有 CRC，定帧靠“帧头 + ID 合法(0xB0~0xB7) + Func 合法 + 帧尾就位 + 曲线值合理”
+   这一组条件，任一不满足就丢 1 字节重新找帧头（CAN-FD 的补零字节也这样跳过）。
+   其中“曲线值合理”按类型分别判：float 曲线要有限（非 NaN/Inf），
+   错误字要落在三段位域内 —— 后者比旧版的纯浮点检查更强，反而提高了定帧可靠性。
+2. **本工程只用低速策略**（`app_config.h: ROUTER_TX_LOW_SPEED`）：1kHz 采样即发。
+   新固件的 `RouterTxFuncCode` 只剩 `NORMAL(0)/HIGH(1)`（不再按总线区分），
+   低速帧无论走 USB/USART 还是 FDCAN，Func 都是 `0`，解码器只接受它。
    新帧不带时间戳，`hw_time = 帧计数器 / 1kHz`（帧计数器每采样点 +1）。
-   若改回高速策略，放开 `constants.TX_ACCEPTED_FUNCS` 并改采样频率即可。
+   若改回高速策略，放开 `wire.TX_ACCEPTED_FUNCS` 并改采样频率即可。
 
 ## 改帧头/帧尾时的唯一约束：帧尾不能等于任何 mode 的低字节
 
@@ -96,7 +129,7 @@ while (cmd_cnt < max_cmd_cnt && payload[RX_FRAME_HEADER_SIZE + cmd_cnt * 4] != R
   0xF6~0xFF`——以后挑帧尾避开这些即可（`0xBB` 不在其中）。
 - 反例：帧尾若取 `0x1C`，则 `Traj_Vel_Max_M1 = 284 = 0x011C` 会中招，含 vmax 的轨迹命令
   全部发不出去。
-- `RxCommandCodec` 保留了组帧前的护栏（`constants.TAIL_CONFLICT_MODES`）：**日后改帧尾值
+- `RxCommandCodec` 保留了组帧前的护栏（`commands.TAIL_CONFLICT_MODES`）：**日后改帧尾值
   或加新 mode 时若又踩坑，会直接抛错**而不是无声失效。
 
 `0xAA / 0xBB / 0xCC / 0xDD` 这组还顺带避开了 `0x0A`(`\n`)、`0x0D`(`\r`)、`0x1A`、`0x00`——
@@ -106,7 +139,7 @@ while (cmd_cnt < max_cmd_cnt && payload[RX_FRAME_HEADER_SIZE + cmd_cnt * 4] != R
 ## 已核对无需改动的部分
 
 - `MotorState.CODES` 与新固件 `motor_state_machine.h` 的 `MotorStateType` 逐条一致
-  （状态码本次未变；`DISPATCH_STATE` 的参数与反馈解析共用这套枚举）。
+  （状态码本次未变，但**只剩下发用途**，反馈侧已改为错误字，见上）。
 - MCU 节点号：`router_common.h` 的 `RouterCommObject` 已补齐 `MCU0~MCU7 = 0xB0~0xB7`，
   与 `McuConfig.COUNT = 8` 一致（旧版“只定义到 MCU5”的疑问已消除）。
 - Rx Func 固件仍不校验，默认沿用 `RxFunc.FDCAN_CMD`，`config.py` 可一键切 USB_USART。

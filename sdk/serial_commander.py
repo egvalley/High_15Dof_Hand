@@ -6,8 +6,7 @@
 
 """
 
-from sdk.protocol.constants import MotorFunc, RxFunc, MotorState
-from sdk.protocol.rx_command_codec import RxCommandCodec
+from sdk.protocol import MotorFunc, MotorState, RxFunc, RxCommandCodec
 from sdk.models import MotorCommand, MotorTarget
 
 
@@ -129,13 +128,13 @@ class SerialCommander:
 
     def send_state(self, mcu, state, motor=MotorTarget.BOTH):
         """状态机派发 (DispatchMotorStateMachine)。state 可为状态名或状态码。"""
-        if isinstance(state, str):
-            if state not in MotorState.CODES:
-                print(f"[发送失败] 未知状态名: {state}")
-                return False
-            state = MotorState.CODES[state]
+        try:
+            code = MotorState.code_of(state)
+        except ValueError as e:
+            print(f"[发送失败] {e}")
+            return False
         # 状态码本身就是整数码，scale=1，直接当物理量传即可
-        return self._targeted(mcu, [(MotorFunc.DISPATCH_STATE, int(state))], motor)
+        return self._targeted(mcu, [(MotorFunc.DISPATCH_STATE, code)], motor)
 
     # ============================================================ 轨迹
     def send_trajectory(self, mcu, vel_max, acl_max, pos, motor=MotorTarget.BOTH):
@@ -205,16 +204,21 @@ class SerialCommander:
         """按配置序号 config_index 重置控制参数为预设并刷入 Flash (对应固件 ResetControlParams)。"""
         return self._targeted(mcu, [(MotorFunc.FLASHING_PARAMS, int(config_index))], motor)
 
-    def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除 Flash 错误标志 (固件两个 mode 都调同一个 FlashLogic_ServiceClearError)。"""
-        return self._action(mcu, MotorFunc.CLEAR_FLASH_ERROR, motor)
-
     # ============================================================ 错误清除 (无参数)
-    # 内/外环错误态 (状态码 150~155、165) 下，由固件决定是否据此从错误态恢复。
+    # 反馈里的错误字位置位后一直保持，只能靠下面这几条显式清掉，一条清一段位域。
+    # 清掉的是"错误标志"，是否据此从错误态恢复由固件自己决定。
     def send_clear_inner_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除内环错误 (ClearInnerError)，用于从内环错误态恢复。发到目标电机。"""
+        """清除内环错误 (错误字 bit0~bit7)。发到目标电机。"""
         return self._action(mcu, MotorFunc.CLEAR_INNER_ERROR, motor)
 
     def send_clear_outer_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除外环错误 (ClearOuterError)，用于从外环错误态恢复。发到目标电机。"""
+        """清除外环错误 (错误字 bit8~bit15)。发到目标电机。"""
         return self._action(mcu, MotorFunc.CLEAR_OUTER_ERROR, motor)
+
+    def send_clear_encoder_error(self, mcu, motor=MotorTarget.BOTH):
+        """清除编码器错误 (错误字 bit16~bit17)。M1/M2 各挂一路独立 SPI，各清各的。"""
+        return self._action(mcu, MotorFunc.CLEAR_ENCODER_ERROR, motor)
+
+    def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):
+        """清除 Flash 错误标志。Flash 是共享设备，固件两个 mode 都调同一个清除服务。"""
+        return self._action(mcu, MotorFunc.CLEAR_FLASH_ERROR, motor)

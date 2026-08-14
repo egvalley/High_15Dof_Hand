@@ -6,7 +6,7 @@ Rx 命令帧编码器：上位机 -> MCU。
   不再靠"命令在帧里的前/后半段位置"，所以本层只是把命令平铺进帧，
   旧版的"两半用 NOP_MODE 补齐到等长"机制已彻底废除。
 
-帧格式 (router_rec_handle.c)：
+帧格式 (wire.RxFrame)：
     [0]        帧头 0xAA
     [1]        目标 ID
     [2]        Func
@@ -19,7 +19,9 @@ Rx 命令帧编码器：上位机 -> MCU。
 
 import struct
 
-from sdk.protocol.constants import RxFrame, RxFunc, McuConfig, TAIL_CONFLICT_MODES
+from sdk.protocol.commands import TAIL_CONFLICT_MODES
+from sdk.protocol.topology import McuConfig
+from sdk.protocol.wire import RxFrame, RxFunc
 
 
 class RxCommandCodec:
@@ -45,7 +47,7 @@ class RxCommandCodec:
         拦截 mode 低字节 == 帧尾 的命令 (现行帧尾 0xBB 下不存在这种 mode，本检查是护栏)。
 
         固件靠"每 4 字节扫一次、遇帧尾字节即认为帧结束"来定位命令条数，这类命令会连同
-        它之后的所有命令被静默丢弃 (详见 constants.TAIL_CONFLICT_MODES 的说明)。
+        它之后的所有命令被静默丢弃 (详见 commands.TAIL_CONFLICT_MODES 的说明)。
         与其发出去后无声失效，不如在这里抛错。
         """
         bad = [c.mode for c in commands if (c.mode & 0xFF) == RxFrame.TAIL]

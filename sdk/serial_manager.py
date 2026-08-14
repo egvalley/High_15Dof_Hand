@@ -18,8 +18,7 @@ import time
 
 import serial
 
-from sdk.protocol.constants import McuConfig, TxFrame
-from sdk.protocol.tx_feedback_codec import TxFeedbackCodec
+from sdk.protocol import McuConfig, TxFrame, TxFeedbackCodec
 from sdk.models import LinkStats
 
 # 帧计数器缺口大于此值就认为是"下位机重启/长时间断流"，只重新对齐、不计入丢包，

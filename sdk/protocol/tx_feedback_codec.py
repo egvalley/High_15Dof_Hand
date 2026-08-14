@@ -1,40 +1,33 @@
 """
-Tx 反馈帧解码器：MCU -> 上位机。
+Tx 反馈帧解码器：MCU -> 上位机。字节流拼帧 -> 定帧校验 -> McuFeedback。
 
-帧格式 (router_tran_handle.c)：
-    [0]        帧头 0xCC
-    [1]        ID (发送源 MCU 节点号)
-    [2]        Func (RouterTxFuncCode 0~3)
-    [3..6]     帧计数器 uint32 小端
-    [7..]      curve_count 个 float32 小端 (按注册索引顺序)
-    [tail]     帧尾 0xDD
-
-
+帧格式见 wire.TxFrame，曲线的类型与顺序见 topology.CurveLayout —— 本模块只管
+"从哪切帧、切下来靠不靠谱"，具体每条曲线是什么类型一概交给布局对象。
 """
 
-import math
 import struct
 
-from sdk.protocol.constants import (TxFrame, McuConfig, MotorState,
-                                    TX_ACCEPTED_FUNCS, LOW_SPEED_FREQ)
+from sdk.protocol.errors import error_names
+from sdk.protocol.topology import CurveLayout, McuConfig
+from sdk.protocol.wire import TxFrame, TX_ACCEPTED_FUNCS, LOW_SPEED_FREQ
 from sdk.models import McuFeedback, MotorFeedback
 
 
 class TxFeedbackCodec:
-    """有状态的字节流 -> 帧 解码器 (内部维护拼帧缓冲区)。"""
+    """有状态的字节流 -> 帧 解码器 (内部维护拼帧缓冲区)。每条串口链路持有一个实例。"""
 
     def __init__(self, curve_count=McuConfig.LOW_SPEED_CURVE_COUNT):
         """
-        新建解码器，内部拼帧缓冲区置空。每条串口链路持有一个实例。
-        参数: curve_count 下位机注册的曲线数量 (决定帧长；新协议帧里无此字段)。
+        新建解码器，内部拼帧缓冲区置空。
+        参数: curve_count 下位机注册的曲线数量 (帧里无长度字段，靠它定帧长与曲线布局)。
         """
-        if not 0 < curve_count <= TxFrame.MAX_CURVE_COUNT:
-            raise ValueError(
-                f"曲线数量非法: {curve_count} (应为 1~{TxFrame.MAX_CURVE_COUNT})")
-        self.curve_count = curve_count
-        self._frame_len = TxFrame.frame_size(curve_count)
-        self._row_fmt = f"<{curve_count}f"
+        self.layout = CurveLayout(curve_count)
         self._buffer = bytearray()
+
+    @property
+    def curve_count(self):
+        """本解码器按几条曲线定帧。"""
+        return self.layout.curve_count
 
     def reset(self):
         """清空拼帧缓冲区。重新连接串口时调用，避免旧的半截字节污染新数据。"""
@@ -43,12 +36,7 @@ class TxFeedbackCodec:
     # ---------------------------------------------------------------- 主接口
     def feed(self, data):
         """
-        投喂新字节，返回本次能完整解析出的 McuFeedback 列表。
-
-        参数:
-            data: bytes / bytearray，新到达的原始字节。
-        返回:
-            list[McuFeedback]
+        投喂新到达的原始字节 (bytes / bytearray)，返回本次能完整解析出的 list[McuFeedback]。
         """
         if data:
             self._buffer.extend(data)
@@ -57,83 +45,83 @@ class TxFeedbackCodec:
     # ---------------------------------------------------------------- 内部
     def _drain(self):
         """
-        从缓冲区尽可能多地切出完整帧：定位帧头 -> 按曲线数量取定长帧 -> 校验 -> 解码。
+        从缓冲区尽可能多地切出完整帧：定位帧头 -> 按布局取定长帧 -> 校验 -> 解码。
         数据不足则保留等待下次；任一校验失败就丢 1 字节继续找下一个帧头
         (CAN FD 帧尾之后的补零字节也在这里被跳过)。
-        返回本轮解出的 list[McuFeedback]。
         """
         buf = self._buffer
+        frame_len = self.layout.frame_size
         out = []
 
-        while len(buf) >= self._frame_len:
-            hi = buf.find(TxFrame.HEADER)
-            if hi == -1:
+        while len(buf) >= frame_len:
+            head = buf.find(TxFrame.HEADER)
+            if head == -1:
                 buf.clear()
                 break
-            if hi > 0:
-                del buf[:hi]
-            if len(buf) < self._frame_len:
+            if head > 0:
+                del buf[:head]
+            if len(buf) < frame_len:
                 break
 
-            # 无 CRC，只能靠这几项定帧：ID 合法 / Func 合法 / 帧尾就位
-            mcu_id = buf[1]
-            if not (McuConfig.BASE_ID <= mcu_id < McuConfig.BASE_ID + McuConfig.COUNT):
-                del buf[:1]
+            frame = self._decode(buf)
+            if frame is None:
+                del buf[:1]     # 定帧不成立，退 1 字节找下一个帧头
                 continue
 
-            func = buf[2]
-            if func not in TX_ACCEPTED_FUNCS:
-                del buf[:1]
-                continue
-
-            if buf[self._frame_len - 1] != TxFrame.TAIL:
-                del buf[:1]
-                continue
-
-            row = struct.unpack_from(self._row_fmt, buf, TxFrame.HEADER_SIZE)
-            if not all(math.isfinite(v) for v in row):
-                # NaN / Inf 只可能来自错位定帧 (曲线本身不会是非有限值)
-                del buf[:1]
-                continue
-
-            frame_counter = struct.unpack_from("<I", buf, 3)[0]
-            del buf[:self._frame_len]
-
-            out.append(self._build_feedback(mcu_id, func, frame_counter, row))
+            del buf[:frame_len]
+            out.append(frame)
 
         return out
 
-    def _build_feedback(self, mcu_id, func, frame_counter, row):
-        """把一帧已校验的数据组成 McuFeedback (曲线值按 2 电机 × 5 字段拆开)。"""
+    def _decode(self, buf):
+        """
+        校验 buf 开头这一帧并解码；不成立返回 None。
+
+        帧里没有 CRC，只能靠这几项定帧：ID 合法 / Func 合法 / 帧尾就位 / 曲线值合理
+        (曲线值的合理性由布局按每条曲线的类型判，见 CurveLayout.is_plausible)。
+        """
+        mcu_id = buf[1]
+        if not (McuConfig.BASE_ID <= mcu_id < McuConfig.BASE_ID + McuConfig.COUNT):
+            return None
+
+        func = buf[2]
+        if func not in TX_ACCEPTED_FUNCS:
+            return None
+
+        if buf[self.layout.frame_size - 1] != TxFrame.TAIL:
+            return None
+
+        row = self.layout.unpack(buf)
+        if not self.layout.is_plausible(row):
+            return None
+
+        frame_counter = struct.unpack_from("<I", buf, 3)[0]
         return McuFeedback(
             mcu_index=McuConfig.to_index(mcu_id),
             mcu_id=mcu_id,
             func=func,
             curve_count=self.curve_count,
             frame_counter=frame_counter,
-            # 新协议无时间戳；帧计数器每采样点 +1，按低速采样频率折算成秒
+            # 帧里无时间戳；帧计数器每采样点 +1，按低速采样频率折算成秒
             hw_time=frame_counter / LOW_SPEED_FREQ,
-            motors=self._row_to_motors(row),
+            motors=self._to_motors(row),
             curves=list(row),
         )
 
-    @staticmethod
-    def _row_to_motors(row):
-        """把一行 curve 值按 2 电机 x 5 字段 拆成 MotorFeedback 列表。"""
-        if len(row) != McuConfig.LOW_SPEED_CURVE_COUNT:
-            # 曲线布局不是标准的"2 电机 × 5 字段"，无法映射电机字段 (原始值仍在 curves 里)
-            return [MotorFeedback() for _ in range(McuConfig.MOTORS_PER_MCU)]
-
-        fields = McuConfig.MOTOR_CURVE_FIELDS
+    def _to_motors(self, row):
+        """把一行曲线值拆成每个电机的 MotorFeedback (布局非标准时给一组空反馈)。"""
         motors = []
         for m in range(McuConfig.MOTORS_PER_MCU):
-            base = m * McuConfig.CURVES_PER_MOTOR
-            vals = {name: row[base + off] for off, name in enumerate(fields)}
+            vals = self.layout.motor_values(row, m)
+            if not vals:
+                motors.append(MotorFeedback())
+                continue
 
-            code = int(round(vals["state"]))
+            # 错误字已按 uint32 解出，逐位拆成错误名 —— 可能一个都没有，也可能同时好几个
+            word = int(vals["error"])
             motors.append(MotorFeedback(
-                state_code=code,
-                state_name=MotorState.name(code) or "—",
+                error_word=word,
+                error_names=error_names(word),
                 theta=vals.get("theta"),
                 omega=vals.get("omega"),
                 acl=vals.get("acl"),
