@@ -73,7 +73,7 @@ High_15Dof_Hand/
 | 段 | 位域 | 来源枚举 | 内容 | 清除命令 |
 |---|---|---|---|---|
 | 状态 | bit24~bit31 | `MotorStateType` | 状态机当前状态码（单值） | —（每帧实时值，不需要也不能清） |
-| App：轨迹规划 | bit0~bit7 | `MotorTrajPlanErrorSystem` | 执行中收到新指令(已丢弃) / 电机不在位置·阻抗控制 | **287** |
+| App：轨迹规划 | bit0~bit7 | `MotorTrajPlanErrorSystem` | 执行中收到新指令(已丢弃) / 工作状态错误（电机不在位置·阻抗控制） | **287** |
 | FOC：内环 | bit8~bit11 | `InnerOuterErrorSystem` | 控制参数丢失 / 编码器数据丢失 / 电流采样丢失 | 270 |
 | FOC：外环 | bit12~bit15 | `InnerOuterErrorSystem` | 控制参数丢失 / 参数存 Flash 失败 | 271 |
 | Device：编码器 | bit16~bit17 | `EncoderErrorSystem` | SPI 断连 / SPI 数据 CRC 失败 | 323 |

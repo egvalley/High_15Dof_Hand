@@ -58,7 +58,7 @@ class ErrorBit(IntEnum):
     #                            掩码       显示名
     # —— App 段 bit0~bit7：轨迹规划 (MotorTrajPlanErrorSystem) ——
     TRAJ_RUNNING_BUSY        = (1 << 0,  "轨迹:执行中收到新指令(已丢弃)")
-    TRAJ_WORKING_BROKEN      = (1 << 1,  "轨迹:电机不在位置/阻抗控制")
+    TRAJ_WORKING_BROKEN      = (1 << 1,  "轨迹:工作状态错误")
     # —— FOC 内环 bit8~bit11 (InnerOuterErrorSystem) ——
     INNER_CONTROL_PARAMS     = (1 << 8,  "内环:控制参数丢失")
     INNER_ENCODER_READ       = (1 << 9,  "内环:编码器数据丢失")
