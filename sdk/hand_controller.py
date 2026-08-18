@@ -138,6 +138,10 @@ class HandController:
         return self._run(mcu_indices,
                          lambda c, i: c.send_trajectory_limits(i, vel_max, acl_max, motor))
 
+    def send_trajectory_vel_max(self, mcu_indices, vel_max, motor=MotorTarget.BOTH):
+        """只更新轨迹速度上限 vmax，沿用上一帧 amax 与目标位置。发到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_trajectory_vel_max(i, vel_max, motor))
+
     def send_trajectory_acl_max(self, mcu_indices, acl_max, motor=MotorTarget.BOTH):
         """只更新轨迹加速度上限 amax，沿用上一帧 vmax 与目标位置。发到目标电机。"""
         return self._run(mcu_indices, lambda c, i: c.send_trajectory_acl_max(i, acl_max, motor))

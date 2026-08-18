@@ -7,7 +7,8 @@ Tx 反馈帧解码器：MCU -> 上位机。字节流拼帧 -> 定帧校验 -> Mc
 
 import struct
 
-from sdk.protocol.errors import error_names
+from sdk.protocol.commands import MotorState
+from sdk.protocol.info_word import error_names, errors_of, state_of
 from sdk.protocol.topology import CurveLayout, McuConfig
 from sdk.protocol.wire import TxFrame, TX_ACCEPTED_FUNCS, LOW_SPEED_FREQ
 from sdk.models import McuFeedback, MotorFeedback
@@ -117,10 +118,15 @@ class TxFeedbackCodec:
                 motors.append(MotorFeedback())
                 continue
 
-            # 错误字已按 uint32 解出，逐位拆成错误名 —— 可能一个都没有，也可能同时好几个
-            word = int(vals["error"])
+            # 信息字已按 uint32 解出，这里拆成两半：高字节是状态码 (单值)，
+            # 低 24 位是错误位域 (可能一个都没有，也可能同时好几个)
+            word = int(vals["info"])
+            state_code = state_of(word)
             motors.append(MotorFeedback(
-                error_word=word,
+                info_word=word,
+                state_code=state_code,
+                state_name=MotorState.name(state_code),
+                error_word=errors_of(word),
                 error_names=error_names(word),
                 theta=vals.get("theta"),
                 omega=vals.get("omega"),

@@ -53,12 +53,17 @@ class MotorFeedback:
     """
     单个电机的一帧反馈。
 
-    新协议第 0 条曲线是 uint32 错误字位域 (取代旧协议的状态码曲线)：可以同时报多个错误，
-    也可以一个都不报 (error_word == 0)。位的含义与拆位由协议层 sdk.protocol.errors 负责，
-    本层只存"错误字原值 + 已拆好的错误名"。
+    第 0 条曲线是 uint32 信息字 (info_word)，一个字里装了两类东西，本层把它拆开存：
+      状态段 bit24~31 -> state_code / state_name，单值，就是电机状态机当前状态；
+      错误段 bit0 ~23 -> error_word / error_names，位域，可以同时报多个，也可以一个不报。
+    位的含义与拆位规则由协议层 sdk.protocol.info_word 负责，本层只存拆好的结果。
+    界面上这两段分两列显示，不要再合成一列。
     """
 
-    error_word: Optional[int] = None
+    info_word: Optional[int] = None
+    state_code: Optional[int] = None
+    state_name: Optional[str] = None
+    error_word: int = 0
     error_names: List[str] = field(default_factory=list)
     theta: Optional[float] = None
     omega: Optional[float] = None
@@ -66,14 +71,26 @@ class MotorFeedback:
     torque: Optional[float] = None
 
     @property
+    def has_frame(self):
+        """本条反馈有没有真的解到信息字 (没有则各列显示占位符)。"""
+        return self.info_word is not None
+
+    @property
     def has_error(self):
         """本帧是否有任何错误置位 (无反馈时为 False)。"""
         return bool(self.error_word)
 
     @property
+    def state_text(self):
+        """状态列显示文本：无反馈为 '—'，否则为状态名 (未知码为 Unknown(n))。"""
+        if not self.has_frame:
+            return "—"
+        return self.state_name or "—"
+
+    @property
     def error_text(self):
-        """一行显示文本：无反馈为 '—'，无错误为 '正常'，多个错误用 ' | ' 并列。"""
-        if self.error_word is None:
+        """错误列显示文本：无反馈为 '—'，无错误为 '正常'，多个错误用 ' | ' 并列。"""
+        if not self.has_frame:
             return "—"
         return " | ".join(self.error_names) or "正常"
 
@@ -95,7 +112,7 @@ class McuFeedback:
     hw_time: float
     motors: List[MotorFeedback] = field(default_factory=list)
     # 原始曲线值 (按注册索引顺序)，曲线表与"2 电机 × 5 字段"不一致时靠它取数。
-    # 元素类型随注册类型走：错误字曲线是 int (uint32 位域)，其余是 float
+    # 元素类型随注册类型走：信息字曲线是 int (uint32 位域)，其余是 float
     curves: List = field(default_factory=list)
 
 

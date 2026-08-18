@@ -148,6 +148,10 @@ class SerialCommander:
         return self._targeted(mcu, [(MotorFunc.TRAJ_VEL_MAX, vel_max),
                                     (MotorFunc.TRAJ_ACL_MAX, acl_max)], motor)
 
+    def send_trajectory_vel_max(self, mcu, vel_max, motor=MotorTarget.BOTH):
+        """只更新轨迹速度上限 vmax，沿用上一帧的 amax 与目标位置。发到目标电机。"""
+        return self._targeted(mcu, [(MotorFunc.TRAJ_VEL_MAX, vel_max)], motor)
+
     def send_trajectory_acl_max(self, mcu, acl_max, motor=MotorTarget.BOTH):
         """只更新轨迹加速度上限 amax，沿用上一帧的 vmax 与目标位置。发到目标电机。"""
         return self._targeted(mcu, [(MotorFunc.TRAJ_ACL_MAX, acl_max)], motor)
@@ -205,18 +209,22 @@ class SerialCommander:
         return self._targeted(mcu, [(MotorFunc.FLASHING_PARAMS, int(config_index))], motor)
 
     # ============================================================ 错误清除 (无参数)
-    # 反馈里的错误字位置位后一直保持，只能靠下面这几条显式清掉，一条清一段位域。
-    # 清掉的是"错误标志"，是否据此从错误态恢复由固件自己决定。
+    # 反馈信息字里的错误位置位后一直保持，只能靠下面这几条显式清掉，一条清一段位域
+    # (状态段不在此列，那是每帧实时值)。清掉的是"错误标志"，是否据此从错误态恢复由固件自己决定。
+    def send_clear_traj_error(self, mcu, motor=MotorTarget.BOTH):
+        """清除轨迹规划错误 (信息字 bit0~bit7)。发到目标电机。"""
+        return self._action(mcu, MotorFunc.TRAJ_CLEAR_ERROR, motor)
+
     def send_clear_inner_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除内环错误 (错误字 bit0~bit7)。发到目标电机。"""
+        """清除内环错误 (信息字 bit8~bit11)。发到目标电机。"""
         return self._action(mcu, MotorFunc.CLEAR_INNER_ERROR, motor)
 
     def send_clear_outer_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除外环错误 (错误字 bit8~bit15)。发到目标电机。"""
+        """清除外环错误 (信息字 bit12~bit15)。发到目标电机。"""
         return self._action(mcu, MotorFunc.CLEAR_OUTER_ERROR, motor)
 
     def send_clear_encoder_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除编码器错误 (错误字 bit16~bit17)。M1/M2 各挂一路独立 SPI，各清各的。"""
+        """清除编码器错误 (信息字 bit16~bit17)。M1/M2 各挂一路独立 SPI，各清各的。"""
         return self._action(mcu, MotorFunc.CLEAR_ENCODER_ERROR, motor)
 
     def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):

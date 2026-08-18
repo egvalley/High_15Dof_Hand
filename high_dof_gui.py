@@ -53,6 +53,9 @@ class ScrollableFrame(ttk.Frame):
 
 class HighDofHandGUI:
 
+    # 监控树的行占位。列顺序 = 状态/错误/θ/ω/a/τ/链路，加减列时改这里即可
+    MOTOR_ROW_NODATA = ("—", "—", "—", "—", "—", "—", "")
+
     # 状态机派发按钮: (显示名, 状态键名)
     STATE_BUTTONS = [
         ("就绪", "StartupReady"),
@@ -118,20 +121,27 @@ class HighDofHandGUI:
         self._build_control_tab()
 
     # ---------------------------------------------------------- 监控页
+    @staticmethod
+    def _mcu_row(meta):
+        """MCU 父行的 values：只有最后的"链路"列有内容，前面各列留空。"""
+        return ("",) * (len(HighDofHandGUI.MOTOR_ROW_NODATA) - 1) + (meta,)
+
     def _build_monitor_tab(self):
         """构建实时监控页：一棵 Treeview，MCU 为父节点、电机为子节点，预建所有行待刷新。"""
         info = ttk.Label(
             self.tab_monitor,
             text="8 个 MCU (0xB0~0xB7)，每个 MCU 管控 2 个电机，"
-                 "每个电机 5 条低速曲线 (错误字 / θ / ω / 加速度 / 力矩)。"
-                 "错误字是位域，可同时报多个错误；置位后一直保持，需在指令控制页显式清错。",
+                 "每个电机 5 条低速曲线 (信息字 / θ / ω / 加速度 / 力矩)。"
+                 "信息字高字节是状态机状态码 (状态列)、低 24 位是错误位域 (错误列)："
+                 "可同时报多个错误，置位后一直保持，需在指令控制页按段显式清错。",
             foreground="#555",
         )
         info.pack(fill="x", padx=6, pady=(6, 2))
 
-        cols = ("error", "theta", "omega", "acl", "torque", "meta")
+        cols = ("state", "error", "theta", "omega", "acl", "torque", "meta")
         tree = ttk.Treeview(self.tab_monitor, columns=cols, show="tree headings", height=26)
         tree.heading("#0", text="设备 / 电机")
+        tree.heading("state", text="状态")
         tree.heading("error", text="错误")
         tree.heading("theta", text="θ (rad)")
         tree.heading("omega", text="ω (rad/s)")
@@ -139,14 +149,15 @@ class HighDofHandGUI:
         tree.heading("torque", text="τ (mN·m)")
         tree.heading("meta", text="链路 / 丢包")
 
-        tree.column("#0", width=180, anchor="w")
+        tree.column("#0", width=170, anchor="w")
+        tree.column("state", width=160, anchor="center")
         # 多个错误并列显示，这一列要足够宽
-        tree.column("error", width=300, anchor="w")
-        tree.column("theta", width=110, anchor="e")
-        tree.column("omega", width=110, anchor="e")
-        tree.column("acl", width=110, anchor="e")
-        tree.column("torque", width=110, anchor="e")
-        tree.column("meta", width=200, anchor="center")
+        tree.column("error", width=280, anchor="w")
+        tree.column("theta", width=100, anchor="e")
+        tree.column("omega", width=100, anchor="e")
+        tree.column("acl", width=100, anchor="e")
+        tree.column("torque", width=100, anchor="e")
+        tree.column("meta", width=190, anchor="center")
 
         tree.tag_configure("nodata", foreground="#999")
         tree.tag_configure("ok", foreground="#127a12")
@@ -164,10 +175,10 @@ class HighDofHandGUI:
             mcu_id = McuConfig.IDS[i]
             pid = f"mcu{i}"
             tree.insert("", "end", iid=pid, text=f"MCU{i}  (0x{mcu_id:02X})",
-                        values=("", "", "", "", "", "无数据"), tags=("mcu", "nodata"), open=True)
+                        values=self._mcu_row("无数据"), tags=("mcu", "nodata"), open=True)
             for m in range(McuConfig.MOTORS_PER_MCU):
                 tree.insert(pid, "end", iid=f"{pid}_m{m}", text=f"    电机{m}",
-                            values=("—", "—", "—", "—", "—", ""), tags=("nodata",))
+                            values=self.MOTOR_ROW_NODATA, tags=("nodata",))
 
     # ---------------------------------------------------------- 控制页
     def _build_control_tab(self):
@@ -226,10 +237,12 @@ class HighDofHandGUI:
         """App 动作分区：(按钮文案, commander 方法名) 表驱动，点击调用 _do_action。"""
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
-        # 后四条按错误字的分段清错：内环 bit0~7 / 外环 bit8~15 / 编码器 bit16~17 / Flash
+        # 后五条按信息字的分段清错：轨迹 bit0~7 / 内环 bit8~11 / 外环 bit12~15 /
+        # 编码器 bit16~17。Flash 错误不在信息字里，是 Flash 设备自己的状态
         actions = [
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
+            ("清除轨迹错误", "send_clear_traj_error"),
             ("清除内环错误", "send_clear_inner_error"),
             ("清除外环错误", "send_clear_outer_error"),
             ("清除编码器错误", "send_clear_encoder_error"),
@@ -300,7 +313,11 @@ class HighDofHandGUI:
                    command=self._do_impedance).grid(row=0, column=6, padx=8)
 
     def _build_traj_section(self, parent):
-        """轨迹分区：vmax/amax/双电机位置输入 + "发送轨迹"(_do_traj) / "仅更新位置"(_do_traj_pos_only)。"""
+        """
+        轨迹分区：vmax/amax/位置三个输入 + 五个按钮，按"这一帧下发哪几条"划分：
+        发送轨迹 = vmax+amax+位置 / 仅更新位置 / 仅更新限幅 = vmax+amax / 仅更新vmax / 仅更新amax。
+        限幅只在轨迹 Idle 时被固件接收，且到下一条位置指令才参与重新规划。
+        """
         f = ttk.LabelFrame(parent, text="轨迹规划 (一帧内设定 速度上限/加速度上限/目标位置)")
         f.pack(fill="x", padx=6, pady=5)
         r = ttk.Frame(f); r.pack(side="left")
@@ -313,6 +330,8 @@ class HighDofHandGUI:
                    command=self._do_traj_pos_only).pack(side="left", padx=2)
         ttk.Button(f, text="仅更新限幅", width=12,
                    command=self._do_traj_limits_only).pack(side="left", padx=2)
+        ttk.Button(f, text="仅更新vmax", width=12,
+                   command=self._do_traj_vel_only).pack(side="left", padx=2)
         ttk.Button(f, text="仅更新amax", width=12,
                    command=self._do_traj_acl_only).pack(side="left", padx=2)
 
@@ -520,6 +539,19 @@ class HighDofHandGUI:
             messagebox.showwarning("输入错误", "回零参数: 请输入有效数字")
             return None
 
+    def _do_traj_vel_only(self):
+        """"仅更新vmax"回调：只发速度上限，沿用上一帧 amax 与目标位置。"""
+        if not self._ensure_connected():
+            return
+        try:
+            v = self._getf("tj_v")
+        except ValueError:
+            messagebox.showwarning("输入错误", "轨迹速度: 请输入有效数字")
+            return
+        results = self.controller.send_trajectory_vel_max(
+            self._targets(), v, self._motor_target())
+        self._show_results(f"轨迹vmax [{v}]", results)
+
     def _do_traj_acl_only(self):
         """"仅更新amax"回调：只发加速度上限，沿用上一帧 vmax 与目标位置。"""
         if not self._ensure_connected():
@@ -591,10 +623,10 @@ class HighDofHandGUI:
     def _reset_tree_nodata(self):
         """把监控树所有行复位成"无数据"占位 (断开或清屏时用)。"""
         for i in range(McuConfig.COUNT):
-            self.tree.item(f"mcu{i}", values=("", "", "", "", "", "无数据"),
+            self.tree.item(f"mcu{i}", values=self._mcu_row("无数据"),
                            tags=("mcu", "nodata"))
             for m in range(McuConfig.MOTORS_PER_MCU):
-                self.tree.item(f"mcu{i}_m{m}", values=("—", "—", "—", "—", "—", ""),
+                self.tree.item(f"mcu{i}_m{m}", values=self.MOTOR_ROW_NODATA,
                                tags=("nodata",))
 
     def _update_loop(self):
@@ -622,24 +654,25 @@ class HighDofHandGUI:
                     meta = (f"丢包 {lr:.1f}% "
                             f"(收:{stats.last_sec_received} 丢:{stats.last_sec_lost})")
 
-                self.tree.item(f"mcu{i}", values=("", "", "", "", "", meta),
+                self.tree.item(f"mcu{i}", values=self._mcu_row(meta),
                                tags=("mcu", ptag))
 
                 if frame is None:
                     for m in range(McuConfig.MOTORS_PER_MCU):
                         self.tree.item(f"mcu{i}_m{m}",
-                                       values=("—", "—", "—", "—", "—", ""), tags=("nodata",))
+                                       values=self.MOTOR_ROW_NODATA, tags=("nodata",))
                     continue
 
                 for m in range(McuConfig.MOTORS_PER_MCU):
                     md = frame.motors[m] if m < len(frame.motors) else None
                     if md is None:
                         self.tree.item(f"mcu{i}_m{m}",
-                                       values=("—", "—", "—", "—", "—", ""), tags=("nodata",))
+                                       values=self.MOTOR_ROW_NODATA, tags=("nodata",))
                         continue
                     self.tree.item(
                         f"mcu{i}_m{m}",
                         values=(
+                            md.state_text,
                             md.error_text,
                             self._fmt(md.theta),
                             self._fmt(md.omega),

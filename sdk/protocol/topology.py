@@ -8,21 +8,22 @@ RouterAppFixFreq_Init 里的注册顺序逐条对齐，两边改动要同步。
 import math
 import struct
 
-from sdk.protocol.errors import is_error_word
+from sdk.protocol.info_word import is_info_word
 from sdk.protocol.wire import TxFrame
 
 
 # 单个电机的低速曲线表：(字段名, struct 格式)，顺序即固件注册顺序。
-# ★ 错误字是 uint32 位域 (见 errors.ErrorBit)，不是 float —— 这是新协议相对旧协议的关键改动。
+# ★ 第 0 条是 uint32 信息字位域 (状态码 + 三段错误，见 info_word)，不是 float ——
+#   这是新协议相对旧协议的关键改动，整行不能按清一色 float32 解。
 MOTOR_CURVES = (
-    ("error",  "I"),
+    ("info",   "I"),
     ("theta",  "f"),
     ("omega",  "f"),
     ("acl",    "f"),
     ("torque", "f"),
 )
 
-ERROR_FIELD = "error"
+INFO_FIELD = "info"
 
 
 # ==================================================================== MCU 拓扑
@@ -65,7 +66,7 @@ class McuConfig:
 # ==================================================================== 曲线布局
 class CurveLayout:
     """
-    一帧曲线的布局：由曲线数量定出整帧长度、逐条曲线的解包类型、以及哪些下标是错误字。
+    一帧曲线的布局：由曲线数量定出整帧长度、逐条曲线的解包类型、以及哪些下标是信息字。
 
     曲线数量等于标准的"2 电机 × 5 字段"时按 MOTOR_CURVES 逐条取类型；
     对不上说明下位机注册表被改过、布局未知，退回"全 float32"的通用解法
@@ -84,18 +85,18 @@ class CurveLayout:
 
         if self.is_standard:
             formats = [fmt for _name, fmt in MOTOR_CURVES] * McuConfig.MOTORS_PER_MCU
-            off = McuConfig.MOTOR_CURVE_FIELDS.index(ERROR_FIELD)
-            self.error_indexes = frozenset(
+            off = McuConfig.MOTOR_CURVE_FIELDS.index(INFO_FIELD)
+            self.info_indexes = frozenset(
                 m * McuConfig.CURVES_PER_MOTOR + off
                 for m in range(McuConfig.MOTORS_PER_MCU))
         else:
             formats = ["f"] * curve_count
-            self.error_indexes = frozenset()
+            self.info_indexes = frozenset()
 
         self._row_fmt = "<" + "".join(formats)
 
     def unpack(self, buf, offset=TxFrame.HEADER_SIZE):
-        """从 buf 的 offset 处按本布局解出整行曲线值 (错误字为 int，其余为 float)。"""
+        """从 buf 的 offset 处按本布局解出整行曲线值 (信息字为 int，其余为 float)。"""
         return struct.unpack_from(self._row_fmt, buf, offset)
 
     def is_plausible(self, row):
@@ -103,10 +104,10 @@ class CurveLayout:
         整行曲线值的合理性检查 —— 帧里没有 CRC，这是定帧的最后一道关卡。
 
         float 曲线：NaN / Inf 只可能来自错位定帧，曲线本身不会是非有限值。
-        错误字曲线：三段位域之外一旦有置位就不是错误字，同样说明错位。
+        信息字曲线：状态段与四段错误位域之外一旦有置位就不是信息字，同样说明错位。
         """
         for i, value in enumerate(row):
-            ok = is_error_word(value) if i in self.error_indexes else math.isfinite(value)
+            ok = is_info_word(value) if i in self.info_indexes else math.isfinite(value)
             if not ok:
                 return False
         return True
