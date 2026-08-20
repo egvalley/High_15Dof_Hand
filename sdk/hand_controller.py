@@ -65,19 +65,27 @@ class HandController:
         """向选中 MCU 下发 d 轴电流指令 (A) 到目标电机。"""
         return self._run(mcu_indices, lambda c, i: c.send_id(i, i_d, motor))
 
-    def send_impedance_origin(self, mcu_indices, origin, motor=MotorTarget.BOTH):
-        """向选中 MCU 下发阻抗弹簧原点 (输出轴 rad) 到目标电机。"""
-        return self._run(mcu_indices, lambda c, i: c.send_impedance_origin(i, origin, motor))
+    def send_mit_position(self, mcu_indices, pos, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发 MIT 位置指令 (输出轴 rad) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_mit_position(i, pos, motor))
+
+    def send_mit_velocity(self, mcu_indices, vel, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发 MIT 速度指令 (输出轴 rad/s) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_mit_velocity(i, vel, motor))
+
+    def send_mit_torque_inject(self, mcu_indices, tau, motor=MotorTarget.BOTH):
+        """向选中 MCU 下发 MIT 扭矩前馈 (输出轴 mN·m) 到目标电机。"""
+        return self._run(mcu_indices, lambda c, i: c.send_mit_torque_inject(i, tau, motor))
 
     # ------------------------------------- 类型 B：共享参数 + 目标电机 (motor 选 M0/M1/两者)
     def send_state(self, mcu_indices, state, motor=MotorTarget.BOTH):
         """派发电机状态机。state 可为状态名 (如 'AppPositionCtrl') 或状态码 int。"""
         return self._run(mcu_indices, lambda c, i: c.send_state(i, state, motor))
 
-    def send_impedance_params(self, mcu_indices, spring, damper, inertia, motor=MotorTarget.BOTH):
-        """下发阻抗三参数 刚度/阻尼/惯量 到目标电机。"""
+    def send_mit_params(self, mcu_indices, spring, damper, inertia, motor=MotorTarget.BOTH):
+        """下发 MIT 三系数 刚度/阻尼/惯量 (均为输出轴量) 到目标电机。"""
         return self._run(mcu_indices,
-                         lambda c, i: c.send_impedance_params(i, spring, damper, inertia, motor))
+                         lambda c, i: c.send_mit_params(i, spring, damper, inertia, motor))
 
     def send_pos_pid(self, mcu_indices, kp, ki, motor=MotorTarget.BOTH):
         """整定位置环 PID 的 kp/ki 到目标电机。"""

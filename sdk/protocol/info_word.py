@@ -5,7 +5,7 @@
 (motor_app_instance.h 的 motorX_info_word)，各段互不重叠：
 
     bit24~bit31  电机状态机状态码   MotorStateType           (motor_state_machine.h)
-    bit16~bit23  Device 层错误      目前只有编码器 bit16~17   (encoder_common.h)
+    bit16~bit23  Device 层错误      目前只有编码器 bit16~19   (encoder.h)
     bit8 ~bit15  FOC 错误           内环 bit8~11 / 外环 bit12~15 (motor_error_handle.h)
     bit0 ~bit7   App 层错误         目前只有轨迹规划 bit0~1   (motor_trajectory_planning.h)
 
@@ -37,7 +37,7 @@ class ErrorSeg(IntEnum):
     APP     = 0x000000FF    # bit0 ~ bit7   MOTOR_TRAJ_PLAN_ERROR_MASK
     INNER   = 0x00000F00    # bit8 ~ bit11  MOTOR_ERROR_INNER_MASK
     OUTER   = 0x0000F000    # bit12~ bit15  MOTOR_ERROR_OUTER_MASK
-    ENCODER = 0x00030000    # bit16~ bit17  ENCODER_ERROR_MASK
+    ENCODER = 0x000F0000    # bit16~ bit19  ENCODER_ERROR_MASK (旧固件只到 bit17)
 
 
 class ErrorBit(IntEnum):
@@ -58,7 +58,7 @@ class ErrorBit(IntEnum):
     #                            掩码       显示名
     # —— App 段 bit0~bit7：轨迹规划 (MotorTrajPlanErrorSystem) ——
     TRAJ_RUNNING_BUSY        = (1 << 0,  "轨迹:执行中收到新指令(已丢弃)")
-    TRAJ_WORKING_BROKEN      = (1 << 1,  "轨迹:工作状态错误")
+    TRAJ_WORKING_BROKEN      = (1 << 1,  "轨迹:工作状态错误(电机不在位置控制)")
     # —— FOC 内环 bit8~bit11 (InnerOuterErrorSystem) ——
     INNER_CONTROL_PARAMS     = (1 << 8,  "内环:控制参数丢失")
     INNER_ENCODER_READ       = (1 << 9,  "内环:编码器数据丢失")
@@ -66,12 +66,15 @@ class ErrorBit(IntEnum):
     # —— FOC 外环 bit12~bit15 (InnerOuterErrorSystem) ——
     OUTER_CONTROL_PARAMS     = (1 << 12, "外环:控制参数丢失")
     OUTER_FLASH_PARAMS_SAVE  = (1 << 13, "外环:参数存 Flash 失败")
-    # —— Device 段 bit16~bit23：编码器 (EncoderErrorSystem) ——
-    ENCODER_SPI_CONNECT      = (1 << 16, "编码器:SPI 断连")
-    ENCODER_SPI_CRC          = (1 << 17, "编码器:SPI 数据 CRC 失败")
+    # —— Device 段 bit16~bit19：编码器 (EncoderErrorSystem，encoder.h)
+    #    DMA 采样流水线改造后整段重排，旧的"SPI 断连/SPI 数据 CRC 失败"两条已被替换 ——
+    ENCODER_DMA_TRANSFER     = (1 << 16, "编码器:DMA 传输失败")
+    ENCODER_DMA_OVERRUN      = (1 << 17, "编码器:DMA 采样周期内未搬完")
+    ENCODER_DATA_INVALID     = (1 << 18, "编码器:SPI 无效帧")
+    ENCODER_DATA_CRC         = (1 << 19, "编码器:帧 CRC8 校验失败")
 
 
-# 四段错误位域合起来的合法掩码 (bit18~bit23 是 Device 段里固件还没用到的位，故不在其中)
+# 四段错误位域合起来的合法掩码 (bit20~bit23 是 Device 段里固件还没用到的位，故不在其中)
 ERROR_VALID_MASK = ErrorSeg.APP | ErrorSeg.INNER | ErrorSeg.OUTER | ErrorSeg.ENCODER
 
 # 信息字整体的合法掩码：状态段 + 错误段。这之外一旦有置位，这 4 字节就不是信息字

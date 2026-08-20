@@ -39,11 +39,13 @@ class MotorFunc(IntEnum):
     TORQUE_GEAR              = (   208,    1.0)   # τ(mN·m) = param
     IQ                       = (   209, 1000.0)   # iq = param·0.001
     ID                       = (   210, 1000.0)   # id = param·0.001
-    # —— 阻抗 ——
-    IMPEDANCE_SPRING         = (   232,  100.0)   # k = param/100
-    IMPEDANCE_DAMPER         = (   233, 1000.0)   # d = param/1000
-    IMPEDANCE_INERTIA        = (   234,10000.0)   # j = param/10000
-    IMPEDANCE_SPRING_ORIGIN  = (   235,  100.0)   # 原点 = param/100
+    # —— MIT 控制 (原"阻抗控制"，固件 1adc22b 起改名；三个系数也是出端量) ——
+    MIT_SPRING               = (   232,   10.0)   # k(mN·m/rad)     = param/10   ★ 定标变了 (旧 ×100)
+    MIT_DAMPER               = (   233, 1000.0)   # d(mN·m·s/rad)   = param/1000
+    MIT_INERTIA              = (   234,10000.0)   # j(mN·m·s²/rad)  = param/10000
+    MIT_POS_CMD              = (   235,  100.0)   # θ = param/100   ★ 235 语义变了 (旧为弹簧原点)
+    MIT_VEL_CMD              = (   236,  100.0)   # ω = param/100   ★ 新增
+    MIT_TORQUE_INJECT        = (   237,    1.0)   # τ前馈(mN·m) = param  ★ 新增
     # —— 各环 PID ——
     CUR_PID_KP               = (   252, 1000.0)   # param·0.001
     CUR_PID_KI               = (   253, 1000.0)
@@ -74,7 +76,7 @@ class MotorFunc(IntEnum):
     # —— 设备级 ——
     FLASHING_PARAMS          = (   321,    1.0)   # 按配置序号重置控制参数为预设并刷 Flash
     CLEAR_FLASH_ERROR        = (   322,    1.0)   # 清 Flash 错误；Flash 是共享设备，M1/M2 两码同效
-    CLEAR_ENCODER_ERROR      = (   323,    1.0)   # 清编码器错误 (信息字 bit16~bit17)；各清自己那路 SPI
+    CLEAR_ENCODER_ERROR      = (   323,    1.0)   # 清编码器错误 (信息字 bit16~bit19)；各清自己那路 SPI，并重新布防后台采样
 
     def code_for(self, motor=0):
         """本功能对【第 motor 个电机】(0/1) 的 Control_Mode 值：电机0 = 本值，电机1 = 本值+300。"""
@@ -131,7 +133,7 @@ class MotorState:
         "DbgVelocityClosedLoop_SysIden": 42, "DbgVelocityDisable": 60,
         "DbgPositionClosedLoop_SysIden": 62, "DbgPositionDisable": 80,
         # —— 应用 ——
-        "AppCurrentCtrl": 82, "AppTorqueCtrl": 83, "AppImpedanceCtrl": 84,
+        "AppCurrentCtrl": 82, "AppTorqueCtrl": 83, "AppMITCtrl": 84,
         "AppVelocityCtrl": 85, "AppPositionCtrl": 86, "AppDisable": 100,
         # —— 错误态 (具体错误看信息字的错误位域) ——
         "InnerOuterCommonError": 164, "InnerOuterMismatchError": 165,

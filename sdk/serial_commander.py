@@ -100,16 +100,32 @@ class SerialCommander:
         """下发 d 轴电流指令 id (A) 到目标电机。"""
         return self._targeted(mcu, [(MotorFunc.ID, i_d)], motor)
 
-    def send_impedance_origin(self, mcu, origin, motor=MotorTarget.BOTH):
-        """下发阻抗弹簧原点 (输出轴 rad) 到目标电机。"""
-        return self._targeted(mcu, [(MotorFunc.IMPEDANCE_SPRING_ORIGIN, origin)], motor)
+    # ------------------------------------------------- MIT 控制 (原阻抗控制)
+    # 固件里 MIT 的位置/速度指令与位置环/速度环共用同一条出端通道，命令码 235/236 只是
+    # 给上位机的语义别名；扭矩前馈 237 是运行期量，不写 Flash，每次进 MIT 态由内环清零。
+    # 三个系数与位置/速度/扭矩前馈同坐标系，一律【输出轴】量，固件按 1/减速比² 换到电机端。
+    def send_mit_position(self, mcu, pos, motor=MotorTarget.BOTH):
+        """下发 MIT 位置指令 θ (输出轴 rad) 到目标电机。"""
+        return self._targeted(mcu, [(MotorFunc.MIT_POS_CMD, pos)], motor)
+
+    def send_mit_velocity(self, mcu, vel, motor=MotorTarget.BOTH):
+        """下发 MIT 速度指令 ω (输出轴 rad/s) 到目标电机。"""
+        return self._targeted(mcu, [(MotorFunc.MIT_VEL_CMD, vel)], motor)
+
+    def send_mit_torque_inject(self, mcu, tau, motor=MotorTarget.BOTH):
+        """下发 MIT 扭矩前馈 τ (输出轴 mN·m) 到目标电机。"""
+        return self._targeted(mcu, [(MotorFunc.MIT_TORQUE_INJECT, tau)], motor)
 
     # ============================================================ 共享参数 + 目标电机
-    def send_impedance_params(self, mcu, spring, damper, inertia, motor=MotorTarget.BOTH):
-        """下发阻抗三参数：刚度 spring / 阻尼 damper / 惯量 inertia。"""
-        return self._targeted(mcu, [(MotorFunc.IMPEDANCE_SPRING, spring),
-                                    (MotorFunc.IMPEDANCE_DAMPER, damper),
-                                    (MotorFunc.IMPEDANCE_INERTIA, inertia)], motor)
+    def send_mit_params(self, mcu, spring, damper, inertia, motor=MotorTarget.BOTH):
+        """
+        下发 MIT 三系数：刚度 spring (mN·m/rad) / 阻尼 damper (mN·m·s/rad)
+        / 惯量 inertia (mN·m·s²/rad)，均为【输出轴】量。
+        固件只在 AppMITCtrl 状态下接收，其余状态整条被丢弃 (且这三条会写 Flash)。
+        """
+        return self._targeted(mcu, [(MotorFunc.MIT_SPRING, spring),
+                                    (MotorFunc.MIT_DAMPER, damper),
+                                    (MotorFunc.MIT_INERTIA, inertia)], motor)
 
     def send_pos_pid(self, mcu, kp, ki, motor=MotorTarget.BOTH):
         """整定位置环 PID：kp/ki。"""
@@ -224,7 +240,10 @@ class SerialCommander:
         return self._action(mcu, MotorFunc.CLEAR_OUTER_ERROR, motor)
 
     def send_clear_encoder_error(self, mcu, motor=MotorTarget.BOTH):
-        """清除编码器错误 (信息字 bit16~bit17)。M1/M2 各挂一路独立 SPI，各清各的。"""
+        """
+        清除编码器错误 (信息字 bit16~bit19) 并让固件重新布防后台 DMA 采样。
+        M1/M2 各挂一路独立 SPI，各清各的。
+        """
         return self._action(mcu, MotorFunc.CLEAR_ENCODER_ERROR, motor)
 
     def send_clear_flash_error(self, mcu, motor=MotorTarget.BOTH):

@@ -64,7 +64,7 @@ class HighDofHandGUI:
         ("速度环", "AppVelocityCtrl"),
         ("位置环", "AppPositionCtrl"),
         ("力矩环", "AppTorqueCtrl"),
-        ("阻抗环", "AppImpedanceCtrl"),
+        ("MIT控制", "AppMITCtrl"),
         ("失能", "AppDisable"),
     ]
 
@@ -211,7 +211,7 @@ class HighDofHandGUI:
         self._build_action_section(body)
         self._build_flashing_section(body)
         self._build_value_sections(body)
-        self._build_impedance_section(body)
+        self._build_mit_section(body)
         self._build_traj_section(body)
         self._build_homing_section(body)
         self._build_pid_section(body)
@@ -238,7 +238,7 @@ class HighDofHandGUI:
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
         # 后五条按信息字的分段清错：轨迹 bit0~7 / 内环 bit8~11 / 外环 bit12~15 /
-        # 编码器 bit16~17。Flash 错误不在信息字里，是 Flash 设备自己的状态
+        # 编码器 bit16~19。Flash 错误不在信息字里，是 Flash 设备自己的状态
         actions = [
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
@@ -295,22 +295,35 @@ class HighDofHandGUI:
                        command=lambda m=ctrl_method, k=key, s=short: self._do_value(m, k, s)
                        ).pack(side="left", padx=8)
 
-    def _build_impedance_section(self, parent):
-        """阻抗分区：一行发弹簧原点 (单值, _do_value)，一行发刚度/阻尼/惯量 (_do_impedance)。"""
-        f = ttk.LabelFrame(parent, text="阻抗控制")
+    def _build_mit_section(self, parent):
+        """
+        MIT 控制分区 (原"阻抗控制")：一行发位置/速度/扭矩前馈三条单值指令 (_do_value)，
+        一行发刚度/阻尼/惯量 (_do_mit_params)。全部是【输出轴】量。
+        位置/速度与位置环、速度环共用固件的同一条出端通道，只是命令码不同；
+        三个系数只在 AppMITCtrl 状态下被固件接收，其余状态整条丢弃。
+        """
+        f = ttk.LabelFrame(parent, text="MIT 控制 (出端量：位置/速度/扭矩前馈 + 刚度/阻尼/惯量)")
         f.pack(fill="x", padx=6, pady=5)
 
         r1 = ttk.Frame(f); r1.pack(fill="x")
-        self._labeled_entries(r1, [("imp_o", "弹簧原点(rad)", "0.0")])
-        ttk.Button(r1, text="发送弹簧原点", width=14,
-                   command=lambda: self._do_value("send_impedance_origin", "imp_o", "弹簧原点")
-                   ).grid(row=0, column=2, padx=8)
+        self._labeled_entries(r1, [("mit_p", "位置(rad)", "0.0"), ("mit_v", "速度(rad/s)", "0.0"),
+                                   ("mit_t", "扭矩前馈(mN·m)", "0.0")])
+        ttk.Button(r1, text="发位置", width=8,
+                   command=lambda: self._do_value("send_mit_position", "mit_p", "MIT位置")
+                   ).grid(row=0, column=6, padx=(8, 2))
+        ttk.Button(r1, text="发速度", width=8,
+                   command=lambda: self._do_value("send_mit_velocity", "mit_v", "MIT速度")
+                   ).grid(row=0, column=7, padx=2)
+        ttk.Button(r1, text="发扭矩前馈", width=12,
+                   command=lambda: self._do_value("send_mit_torque_inject", "mit_t", "MIT扭矩前馈")
+                   ).grid(row=0, column=8, padx=2)
 
         r2 = ttk.Frame(f); r2.pack(fill="x")
-        self._labeled_entries(r2, [("imp_k", "刚度", "0.0"), ("imp_b", "阻尼", "0.0"),
-                                   ("imp_j", "惯量", "0.0")])
+        self._labeled_entries(r2, [("mit_k", "刚度(mN·m/rad)", "0.0"),
+                                   ("mit_b", "阻尼(mN·m·s/rad)", "0.0"),
+                                   ("mit_j", "惯量(mN·m·s²/rad)", "0.0")])
         ttk.Button(r2, text="发送刚度/阻尼/惯量", width=18,
-                   command=self._do_impedance).grid(row=0, column=6, padx=8)
+                   command=self._do_mit_params).grid(row=0, column=6, padx=8)
 
     def _build_traj_section(self, parent):
         """
@@ -480,18 +493,18 @@ class HighDofHandGUI:
             self._targets(), kp, ki, self._motor_target())
         self._show_results(f"{label} [kp={kp}, ki={ki}]", results)
 
-    def _do_impedance(self):
-        """阻抗参数发送回调：读刚度/阻尼/惯量并下发到目标电机。"""
+    def _do_mit_params(self):
+        """MIT 系数发送回调：读刚度/阻尼/惯量 (出端量) 并下发到目标电机。"""
         if not self._ensure_connected():
             return
         try:
-            k, b, j = self._getf("imp_k"), self._getf("imp_b"), self._getf("imp_j")
+            k, b, j = self._getf("mit_k"), self._getf("mit_b"), self._getf("mit_j")
         except ValueError:
-            messagebox.showwarning("输入错误", "阻抗参数: 请输入有效数字")
+            messagebox.showwarning("输入错误", "MIT 系数: 请输入有效数字")
             return
-        results = self.controller.send_impedance_params(
+        results = self.controller.send_mit_params(
             self._targets(), k, b, j, self._motor_target())
-        self._show_results(f"阻抗 [k={k}, b={b}, j={j}]", results)
+        self._show_results(f"MIT [k={k}, b={b}, j={j}]", results)
 
     def _do_traj(self):
         """轨迹发送回调：读 vmax/amax 与逐电机目标位置，下发完整轨迹指令。"""
