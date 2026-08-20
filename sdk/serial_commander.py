@@ -241,7 +241,7 @@ class SerialCommander:
 
     def send_clear_encoder_error(self, mcu, motor=MotorTarget.BOTH):
         """
-        清除编码器错误 (信息字 bit16~bit19) 并让固件重新布防后台 DMA 采样。
+        清除编码器错误 (信息字 bit16~bit20) 并让固件重新布防后台 DMA 采样。
         M1/M2 各挂一路独立 SPI，各清各的。
         """
         return self._action(mcu, MotorFunc.CLEAR_ENCODER_ERROR, motor)

@@ -61,7 +61,7 @@ High_15Dof_Hand/
 | 回零 init/前力矩/**反力矩**/**前位置**/反位置 | 301~305 | — / ×1 / ×1 / ×100 / ×100 | 新固件把回零参数拆成 **4 条**（反向力矩、前向位置为新增） |
 | 系统辨识 | 311 | — | 常量已列，GUI 暂未开按钮 |
 | 刷参 / 清 Flash 错误 | 321 / 322 | ×1 / — | Flash 是共享设备，M1/M2 两个 mode 同效 |
-| **清编码器错误** | **323** | — | 清信息字 bit16~**bit19** 并重新布防后台 DMA 采样，M1/M2 各清自己那路 SPI |
+| **清编码器错误** | **323** | — | 清信息字 bit16~**bit20** 并重新布防后台 DMA 采样，M1/M2 各清自己那路 SPI |
 
 未纳入：`Uq/Ud/Ualpha/Ubeta`(202~205) —— 固件 Dispatch 的 switch 里**没有对应 case**。
 
@@ -77,14 +77,18 @@ High_15Dof_Hand/
 | App：轨迹规划 | bit0~bit7 | `MotorTrajPlanErrorSystem` | 执行中收到新指令(已丢弃) / 工作状态错误（电机不在位置控制；MIT 态**已不再**被轨迹接受） | **287** |
 | FOC：内环 | bit8~bit11 | `InnerOuterErrorSystem` | 控制参数丢失 / 编码器数据丢失 / 电流采样丢失 | 270 |
 | FOC：外环 | bit12~bit15 | `InnerOuterErrorSystem` | 控制参数丢失 / 参数存 Flash 失败 | 271 |
-| Device：编码器 | bit16~**bit19** | `EncoderErrorSystem`（`encoder.h`） | DMA 传输失败 / DMA 采样周期内未搬完 / SPI 无效帧 / 帧 CRC8 校验失败 | 323 |
+| Device：编码器 | bit16~**bit20** | `EncoderErrorSystem`（`encoder.h`） | DMA 传输失败 / DMA 采样周期内未搬完 / SPI 无效帧 / 帧 CRC8 校验失败 / **器件 STATUS 告警**（转速过高 / 磁场过弱 / 供电欠压） | 323 |
 
-（bit20~bit23 是 Device 段里固件尚未用到的位，恒为 0，上位机拿它当定帧校验的一部分。）
+（bit21~bit23 是 Device 段里固件尚未用到的位，恒为 0，上位机拿它当定帧校验的一部分。）
 
 > 编码器错误段随固件的 DMA 采样流水线改造**整段重排**（`encoder_common.h` → `encoder.h`）：
-> 旧的 bit16「SPI 断连」/ bit17「SPI 数据 CRC 失败」两条已被上表四条替换，段掩码
+> 旧的 bit16「SPI 断连」/ bit17「SPI 数据 CRC 失败」两条已被上表前四条替换，段掩码
 > `ErrorSeg.ENCODER` 同步从 `0x00030000` 放宽到 `0x000F0000`。旧上位机对着新固件跑，
 > bit18/bit19 会被 `is_info_word` 当成越界位而整帧丢掉，看起来像掉线。
+>
+> 随后固件又补了 bit20「器件 STATUS 告警」（`ENCODER_ERROR_GET_STATUS_FAIL`）——
+> 前四条都是 MCU 侧通信链路的问题，这一条是编码器芯片自己在 STATUS 字里报的工况告警
+> （转速过高 / 磁场过弱 / 供电欠压），段掩码再放宽到 `0x001F0000`。
 
 - **状态与错误各说各的**：内外环任一错误置位，固件把状态机切到
   `InnerOuterCommonError(164)`，**具体错在哪只能看错误位域** —— 旧固件"每种错误各占一个状态码"

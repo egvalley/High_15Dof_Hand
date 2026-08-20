@@ -76,7 +76,7 @@ class MotorFunc(IntEnum):
     # —— 设备级 ——
     FLASHING_PARAMS          = (   321,    1.0)   # 按配置序号重置控制参数为预设并刷 Flash
     CLEAR_FLASH_ERROR        = (   322,    1.0)   # 清 Flash 错误；Flash 是共享设备，M1/M2 两码同效
-    CLEAR_ENCODER_ERROR      = (   323,    1.0)   # 清编码器错误 (信息字 bit16~bit19)；各清自己那路 SPI，并重新布防后台采样
+    CLEAR_ENCODER_ERROR      = (   323,    1.0)   # 清编码器错误 (信息字 bit16~bit20)；各清自己那路 SPI，并重新布防后台采样
 
     def code_for(self, motor=0):
         """本功能对【第 motor 个电机】(0/1) 的 Control_Mode 值：电机0 = 本值，电机1 = 本值+300。"""

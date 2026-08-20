@@ -238,7 +238,7 @@ class HighDofHandGUI:
         f = ttk.LabelFrame(parent, text="App 动作")
         f.pack(fill="x", padx=6, pady=5)
         # 后五条按信息字的分段清错：轨迹 bit0~7 / 内环 bit8~11 / 外环 bit12~15 /
-        # 编码器 bit16~19。Flash 错误不在信息字里，是 Flash 设备自己的状态
+        # 编码器 bit16~20。Flash 错误不在信息字里，是 Flash 设备自己的状态
         actions = [
             ("轨迹初始化", "send_traj_init"),
             ("轨迹反初始化", "send_traj_deinit"),
